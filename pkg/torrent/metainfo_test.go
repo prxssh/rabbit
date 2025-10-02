@@ -409,20 +409,20 @@ func TestInfoHash(t *testing.T) {
 	}
 }
 
-func TestTotalLength(t *testing.T) {
+func TestSize(t *testing.T) {
 	// Single-file
-	if got := totalLength(&Info{Length: 42}); got != 42 {
+	if got := (&Metainfo{Info: &Info{Length: 42}}).Size(); got != 42 {
 		t.Fatalf("single-file total = %d, want 42", got)
 	}
 
 	// Multi-file
-	got := totalLength(&Info{Files: []*File{{Length: 10}, {Length: 5}}})
+	got := (&Metainfo{Info: &Info{Files: []*File{{Length: 10}, {Length: 5}}}}).Size()
 	if got != 15 {
 		t.Fatalf("multi-file total = %d, want 15", got)
 	}
 
 	// Invalid (neither)
-	if got := totalLength(&Info{}); got != -1 {
+	if got := (&Metainfo{Info: &Info{}}).Size(); got != -1 {
 		t.Fatalf("invalid total = %d, want -1", got)
 	}
 }
