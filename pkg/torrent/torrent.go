@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/pkg/peer"
+	"github.com/prxssh/rabbit/pkg/piece"
+	"github.com/prxssh/rabbit/pkg/storage"
 	"github.com/prxssh/rabbit/pkg/tracker"
 )
 
@@ -51,10 +53,25 @@ func New(data []byte) (*Torrent, error) {
 		return nil, err
 	}
 
+	storage, err := storage.OpenSingleFile("./data/download.torrent", size)
+	if err != nil {
+		return nil, err
+	}
+
+	picker := piece.NewPicker(
+		metainfo.Info.PieceLength,
+		metainfo.Size(),
+		metainfo.Info.Pieces,
+		nil,
+	)
+
 	peerManager := peer.NewManager(
 		clientID,
 		metainfo.Info.Hash,
 		len(metainfo.Info.Pieces),
+		metainfo.Info.PieceLength,
+		picker,
+		storage,
 		nil,
 	)
 

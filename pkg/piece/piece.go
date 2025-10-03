@@ -20,7 +20,6 @@ type PeerView struct {
 	Peer     netip.AddrPort    // the candidate peer
 	Has      bitfield.Bitfield // peer's current bitfield
 	Unchoked bool              // must be true to issue requests
-	Capacity int               // how many more blocks we can right now
 }
 
 // Request is a concrete plan for a single block request the writer can send.
@@ -286,6 +285,13 @@ func NewPicker(
 			SHA:      pieceHashes[i],
 			Verified: false,
 		}
+
+		for b := 0; b < blocks; b++ {
+			pieces[i].Owners[b] = make(
+				map[netip.AddrPort]*OwnerMeta,
+			)
+		}
+
 		totalBlocks += blocks
 	}
 
@@ -301,7 +307,16 @@ func NewPicker(
 		Endgame:         false,
 		rng:             rng,
 		RemainingBlocks: totalBlocks,
+		ownersByPeer:    make(map[netip.AddrPort]map[uint64]struct{}),
+		outByPeer:       make(map[netip.AddrPort]int),
 	}
+}
+
+func (pk *Picker) PiceHash(idx int) [sha1.Size]byte {
+	pk.mut.RLock()
+	defer pk.mut.RUnlock()
+
+	return pk.Pieces[idx].SHA
 }
 
 // CurrentPieceIndex returns the first piece that is not yet verified.
@@ -315,7 +330,7 @@ func (pk *Picker) CurrentPieceIndex() (int, bool) {
 		}
 	}
 
-	return 0, true
+	return 0, false
 }
 
 // CapacityForPeer returns remaining assignment slots for this peer based on

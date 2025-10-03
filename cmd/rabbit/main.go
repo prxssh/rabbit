@@ -39,7 +39,12 @@ func main() {
 }
 
 func setupLogger() {
-	h := logging.NewPrettyHandler(os.Stdout, nil)
+	opts := logging.DefaultOptions()
+	opts.SlogOpts.Level = slog.LevelDebug
+	opts.SlogOpts.AddSource = true
+
+	h := logging.NewPrettyHandler(os.Stdout, &opts)
 	l := slog.New(h)
+
 	slog.SetDefault(l)
 }

@@ -8,43 +8,53 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/prxssh/rabbit/pkg/piece"
+	"github.com/prxssh/rabbit/pkg/storage"
 )
 
 type Config struct {
-	MaxPeers          int
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	DialTimeout       time.Duration
-	KeepAliveInterval time.Duration
+	MaxPeers                   int
+	MaxInflightRequestsPerPeer int
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	DialTimeout                time.Duration
+	KeepAliveInterval          time.Duration
 }
 
 func withDefaultConfig() Config {
 	return Config{
-		MaxPeers:          50,
-		ReadTimeout:       45 * time.Second,
-		WriteTimeout:      45 * time.Second,
-		DialTimeout:       30 * time.Second,
-		KeepAliveInterval: 2 * time.Minute,
+		MaxPeers:                   50,
+		MaxInflightRequestsPerPeer: 5,
+		ReadTimeout:                45 * time.Second,
+		WriteTimeout:               45 * time.Second,
+		DialTimeout:                30 * time.Second,
+		KeepAliveInterval:          2 * time.Minute,
 	}
 }
 
 type Manager struct {
-	cfg Config
-	log *slog.Logger
-	wg  sync.WaitGroup
-
-	peerMut sync.RWMutex
-	peers   map[netip.AddrPort]*Peer
-	peerCh  chan netip.AddrPort
-
-	pieceCount int
-	clientID   [sha1.Size]byte
-	infoHash   [sha1.Size]byte
+	cfg         Config
+	log         *slog.Logger
+	wg          sync.WaitGroup
+	dialSem     chan struct{}
+	peerMut     sync.RWMutex
+	peers       map[netip.AddrPort]*Peer
+	peerCh      chan netip.AddrPort
+	pieceCount  int
+	clientID    [sha1.Size]byte
+	pieceLength int64
+	infoHash    [sha1.Size]byte
+	picker      *piece.Picker
+	storage     *storage.Disk
 }
 
 func NewManager(
 	clientID, infoHash [sha1.Size]byte,
 	pieceCount int,
+	pieceLength int64,
+	picker *piece.Picker,
+	storage *storage.Disk,
 	cfg *Config,
 ) *Manager {
 	c := withDefaultConfig()
@@ -52,26 +62,28 @@ func NewManager(
 		c = *cfg
 	}
 
-	log := slog.Default().With(
-		"source", "peer_manager",
-		"info_hash", hex.EncodeToString(infoHash[:]),
-		"client_id", hex.EncodeToString(clientID[:]),
-	)
+	log := slog.Default().
+		With("src", "peer_manager", "info_hash", hex.EncodeToString(infoHash[:]))
 
 	return &Manager{
-		cfg:        c,
-		log:        log,
-		clientID:   clientID,
-		infoHash:   infoHash,
-		pieceCount: pieceCount,
-		peers:      make(map[netip.AddrPort]*Peer),
-		peerCh:     make(chan netip.AddrPort, c.MaxPeers),
+		cfg:         c,
+		log:         log,
+		clientID:    clientID,
+		infoHash:    infoHash,
+		pieceCount:  pieceCount,
+		picker:      picker,
+		pieceLength: pieceLength,
+		storage:     storage,
+		dialSem:     make(chan struct{}, c.MaxPeers>>1),
+		peers:       make(map[netip.AddrPort]*Peer),
+		peerCh:      make(chan netip.AddrPort, c.MaxPeers),
 	}
 }
 
 func (m *Manager) Start(ctx context.Context) error {
-	m.wg.Add(1)
 	m.wg.Go(func() { m.processPeersLoop(ctx) })
+
+	m.log.Info("started peer manager")
 
 	return nil
 }
@@ -82,7 +94,7 @@ func (m *Manager) AdmitPeers(peers []netip.AddrPort) {
 		case m.peerCh <- addr:
 		default:
 			m.log.Warn(
-				"queue full dropping",
+				"peer queue full; dropping",
 				slog.String("addr", addr.String()),
 			)
 		}
@@ -98,19 +110,44 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 			return ctx.Err()
 		case addr, ok := <-m.peerCh:
 			if !ok {
-				m.log.Info("queue closed")
+				m.log.Info("peer channel closed")
 				return nil
 			}
 
-			if m.peerExists(addr) {
+			if m.peerExists(addr) ||
+				m.peerCount() >= m.cfg.MaxPeers {
 				continue
 			}
 
-			peer, err := dialPeer(ctx, m, addr)
-			if err != nil {
-				continue
+			select {
+			case m.dialSem <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			m.peerAdd(addr, peer)
+
+			go func(addr netip.AddrPort) {
+				defer func() { <-m.dialSem }()
+
+				dctx, cancel := context.WithTimeout(
+					ctx,
+					m.cfg.DialTimeout,
+				)
+				defer cancel()
+
+				peer, err := dialPeer(dctx, m, addr)
+				if err != nil {
+					return
+				}
+
+				if m.peerExists(addr) ||
+					m.peerCount() >= m.cfg.MaxPeers {
+					_ = peer.Stop()
+					return
+				}
+
+				m.peerAdd(addr, peer)
+				peer.Start(ctx)
+			}(addr)
 		}
 	}
 }
