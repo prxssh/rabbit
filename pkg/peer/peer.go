@@ -283,7 +283,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			}
 
 			pieceExactLen := p.m.pieceLength
-			if int(idx) == p.m.picker.PieceCount {
+			if int(idx) == p.m.picker.PieceCount-1 {
 				pieceExactLen = int64(p.m.picker.LastPieceLen)
 			}
 			ok, err := p.m.storage.VerifyPiece(
