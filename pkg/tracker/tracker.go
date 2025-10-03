@@ -14,13 +14,6 @@ import (
 	"time"
 )
 
-type Tracker interface {
-	Announce(
-		ctx context.Context,
-		params *AnnounceParams,
-	) (*AnnounceResponse, error)
-}
-
 type AnnounceParams struct {
 	InfoHash   [sha1.Size]byte
 	PeerID     [sha1.Size]byte
@@ -86,13 +79,152 @@ func (e Event) String() string {
 	}
 }
 
-func NewTracker(announce string, announceList [][]string) (Tracker, error) {
-	urls, err := buildAnnounceURLs(announce, announceList)
+type TrackerProtocol interface {
+	Announce(
+		ctx context.Context,
+		params *AnnounceParams,
+	) (*AnnounceResponse, error)
+}
+
+type Tracker struct {
+	tiers    [][]*url.URL
+	mut      sync.Mutex
+	trackers map[string]TrackerProtocol
+	log      *slog.Logger
+}
+
+func NewTracker(announce string, announceList [][]string) (*Tracker, error) {
+	tiers, err := buildAnnounceURLs(announce, announceList)
 	if err != nil {
 		return nil, err
 	}
 
-	return newMultiTierTracker(urls)
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	for i := range tiers {
+		if len(tiers[i]) < 2 {
+			continue
+		}
+
+		r.Shuffle(len(tiers[i]), func(a, b int) {
+			tiers[i][a], tiers[i][b] = tiers[i][b], tiers[i][a]
+		})
+	}
+
+	return &Tracker{
+		tiers:    tiers,
+		trackers: make(map[string]TrackerProtocol),
+		log: slog.Default().
+			With("component", "tracker", "tiers", len(tiers)),
+	}, nil
+}
+
+func (t *Tracker) Announce(
+	ctx context.Context,
+	params *AnnounceParams,
+) (*AnnounceResponse, error) {
+	var lastErr error
+
+	for ti := 0; ti < len(t.tiers); ti++ {
+		tier := t.snapshotTier(ti)
+
+		for i, u := range tier {
+			tracker, err := t.getTracker(u)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			resp, err := tracker.Announce(ctx, params)
+			if err == nil {
+				t.promoteWithinTier(ti, i)
+				return resp, nil
+			}
+			lastErr = err
+		}
+	}
+
+	return nil, lastErr
+}
+
+func (t *Tracker) snapshotTier(at int) []*url.URL {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+
+	return append([]*url.URL(nil), t.tiers[at]...)
+}
+
+func (t *Tracker) promoteWithinTier(tierIdx, urlIdx int) {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+
+	tier := t.tiers[tierIdx]
+	if urlIdx <= 0 || urlIdx >= len(tier) {
+		return
+	}
+
+	u := tier[urlIdx]
+	copy(tier[1:urlIdx+1], tier[0:urlIdx])
+	tier[0] = u
+
+	t.log.Debug(
+		"announce.promote",
+		slog.Int("tier", tierIdx),
+		slog.Int("from", urlIdx),
+		slog.String("url", u.String()),
+	)
+}
+
+func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
+	key := u.String()
+
+	t.mut.Lock()
+	tr, ok := t.trackers[key]
+	t.mut.Unlock()
+	if ok {
+		return tr, nil
+	}
+
+	ul := t.log.With(
+		"scheme",
+		u.Scheme,
+		"host",
+		u.Host,
+		"path",
+		u.EscapedPath(),
+	)
+
+	var (
+		tracker TrackerProtocol
+		err     error
+	)
+
+	switch u.Scheme {
+	case "http", "https":
+		tracker, err = NewHTTPTracker(
+			u,
+			ul.With("component", "tracker.http"),
+		)
+	case "udp":
+		tracker, err = NewUDPTracker(
+			u,
+			ul.With("component", "tracker.udp"),
+		)
+	default:
+		err = fmt.Errorf("tracker: unsupported schema %q", u.Scheme)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	t.mut.Lock()
+	t.trackers[key] = tracker
+	t.mut.Unlock()
+
+	t.log.Debug("tracker.cached")
+
+	return tracker, nil
 }
 
 func buildAnnounceURLs(
@@ -139,140 +271,4 @@ func parseTrackerURL(raw string) (*url.URL, bool) {
 	default:
 		return nil, false
 	}
-}
-
-type multiTierTracker struct {
-	tiers    [][]*url.URL
-	mut      sync.Mutex
-	trackers map[string]Tracker
-	log      *slog.Logger
-}
-
-func newMultiTierTracker(tiers [][]*url.URL) (*multiTierTracker, error) {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	for i := range tiers {
-		if len(tiers[i]) < 2 {
-			continue
-		}
-
-		r.Shuffle(len(tiers[i]), func(a, b int) {
-			tiers[i][a], tiers[i][b] = tiers[i][b], tiers[i][a]
-		})
-	}
-
-	return &multiTierTracker{
-		tiers:    tiers,
-		trackers: make(map[string]Tracker),
-		log: slog.Default().
-			With("component", "tracker", "tiers", len(tiers)),
-	}, nil
-}
-
-func (mt *multiTierTracker) Announce(
-	ctx context.Context,
-	params *AnnounceParams,
-) (*AnnounceResponse, error) {
-	var lastErr error
-
-	for t := 0; t < len(mt.tiers); t++ {
-		tier := mt.snapshotTier(t)
-
-		for i, u := range tier {
-			tracker, err := mt.getTracker(u)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			resp, err := tracker.Announce(ctx, params)
-			if err == nil {
-				mt.promoteWithinTier(t, i)
-				return resp, nil
-			}
-			lastErr = err
-		}
-	}
-
-	return nil, lastErr
-}
-
-func (mt *multiTierTracker) snapshotTier(t int) []*url.URL {
-	mt.mut.Lock()
-	defer mt.mut.Unlock()
-
-	return append([]*url.URL(nil), mt.tiers[t]...)
-}
-
-func (mt *multiTierTracker) promoteWithinTier(tierIdx, urlIdx int) {
-	mt.mut.Lock()
-	defer mt.mut.Unlock()
-
-	tier := mt.tiers[tierIdx]
-	if urlIdx <= 0 || urlIdx >= len(tier) {
-		return
-	}
-
-	u := tier[urlIdx]
-	copy(tier[1:urlIdx+1], tier[0:urlIdx])
-	tier[0] = u
-
-	mt.log.Debug(
-		"announce.promote",
-		slog.Int("tier", tierIdx),
-		slog.Int("from", urlIdx),
-		slog.String("url", u.String()),
-	)
-}
-
-func (mt *multiTierTracker) getTracker(u *url.URL) (Tracker, error) {
-	key := u.String()
-
-	mt.mut.Lock()
-	tr, ok := mt.trackers[key]
-	mt.mut.Unlock()
-	if ok {
-		return tr, nil
-	}
-
-	ul := mt.log.With(
-		"scheme",
-		u.Scheme,
-		"host",
-		u.Host,
-		"path",
-		u.EscapedPath(),
-	)
-
-	var (
-		tracker Tracker
-		err     error
-	)
-
-	switch u.Scheme {
-	case "http", "https":
-		tracker, err = NewHTTPTracker(
-			u,
-			ul.With("component", "tracker.http"),
-		)
-	case "udp":
-		tracker, err = NewUDPTracker(
-			u,
-			ul.With("component", "tracker.udp"),
-		)
-	default:
-		err = fmt.Errorf("tracker: unsupported schema %q", u.Scheme)
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	mt.mut.Lock()
-	mt.trackers[key] = tracker
-	mt.mut.Unlock()
-
-	mt.log.Debug("tracker.cached")
-
-	return tracker, nil
 }
