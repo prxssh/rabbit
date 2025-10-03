@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/fatih/color v1.18.0
+	golang.org/x/exp v0.0.0-20251002181428-27f1f14c8bb9
 	golang.org/x/sync v0.17.0
 )
 
