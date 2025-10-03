@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
+	"sync"
 	"time"
 
+	"github.com/prxssh/rabbit/pkg/peer"
 	"github.com/prxssh/rabbit/pkg/tracker"
 )
 
@@ -17,16 +19,20 @@ const (
 
 type Torrent struct {
 	Size       int64
-	PeerID     [sha1.Size]byte
-	Metainfo   *Metainfo
-	Tracker    *tracker.Tracker
+	ClientID   [sha1.Size]byte
 	Uploaded   int64
 	Downloaded int64
 	Left       int64
+
+	Metainfo    *Metainfo
+	Tracker     *tracker.Tracker
+	PeerManager *peer.Manager
+
+	wg sync.WaitGroup
 }
 
 func New(data []byte) (*Torrent, error) {
-	peerID, err := generatePeerID()
+	clientID, err := generatePeerID()
 	if err != nil {
 		return nil, err
 	}
@@ -45,19 +51,30 @@ func New(data []byte) (*Torrent, error) {
 		return nil, err
 	}
 
+	peerManager := peer.NewManager(
+		clientID,
+		metainfo.Info.Hash,
+		len(metainfo.Info.Pieces),
+		nil,
+	)
+
 	return &Torrent{
-		PeerID:     peerID,
-		Metainfo:   metainfo,
-		Tracker:    tracker,
-		Uploaded:   0,
-		Downloaded: 0,
-		Size:       size,
-		Left:       size,
+		ClientID:    clientID,
+		Metainfo:    metainfo,
+		Tracker:     tracker,
+		PeerManager: peerManager,
+		Uploaded:    0,
+		Downloaded:  1,
+		Size:        size,
+		Left:        size,
 	}, nil
 }
 
 func (t *Torrent) Start(ctx context.Context) error {
-	go func() { t.startAnnounceLoop(ctx) }()
+	t.wg.Go(func() { t.startAnnounceLoop(ctx) })
+	t.wg.Go(func() { t.PeerManager.Start(ctx) })
+	t.wg.Wait()
+
 	return nil
 }
 
@@ -99,6 +116,8 @@ func (t *Torrent) startAnnounceLoop(ctx context.Context) error {
 			continue
 		}
 
+		t.PeerManager.AdmitPeers(resp.Peers)
+
 		backoff = backoffStart
 		interval := resp.Interval
 		if interval == 0 {
@@ -118,7 +137,7 @@ func (t *Torrent) buildAnnounceParams(
 ) *tracker.AnnounceParams {
 	return &tracker.AnnounceParams{
 		InfoHash:   t.Metainfo.Info.Hash,
-		PeerID:     t.PeerID,
+		PeerID:     t.ClientID,
 		Port:       6969,
 		Uploaded:   uint64(t.Uploaded),
 		Downloaded: uint64(t.Downloaded),

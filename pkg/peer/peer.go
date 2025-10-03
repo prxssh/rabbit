@@ -2,7 +2,6 @@ package peer
 
 import (
 	"context"
-	"crypto/sha1"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -14,15 +13,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// TODO: make it configurable
-const (
-	readTimeout       = 45 * time.Second
-	writeTimeout      = 45 * time.Second
-	keepAliveInterval = 2 * time.Minute
-	outboundLen       = 64
-)
-
 type Peer struct {
+	m    *Manager
 	conn net.Conn
 	log  *slog.Logger
 
@@ -32,24 +24,20 @@ type Peer struct {
 	PeerInterested bool
 	BF             bitfield.Bitfield
 
-	infoHash [sha1.Size]byte
-	clientID [sha1.Size]byte
-
 	outq    chan *Message
 	grp     *errgroup.Group
 	started bool
 	cancel  context.CancelFunc
 }
 
-func Connect(
+func dialPeer(
 	ctx context.Context,
+	m *Manager,
 	addr netip.AddrPort,
-	infoHash, clientID [sha1.Size]byte,
-	pieceCount int,
 ) (*Peer, error) {
 	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
+		Timeout:   m.cfg.DialTimeout,
+		KeepAlive: m.cfg.DialTimeout,
 		Control:   nil,
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr.String())
@@ -58,20 +46,20 @@ func Connect(
 	}
 
 	l := slog.Default().With(
+		"source", "peer",
 		"remote", conn.RemoteAddr().String(),
 		"local", conn.LocalAddr().String(),
-		"info_hash", hex.EncodeToString(infoHash[:]),
-		"client_id", hex.EncodeToString(clientID[:]),
+		"info_hash", hex.EncodeToString(m.infoHash[:]),
 	)
 
-	l.Info("peer.connected")
+	l.Info("connected")
 
-	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	_ = conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
+	_ = conn.SetWriteDeadline(time.Now().Add(m.cfg.WriteTimeout))
 
-	hs := NewHandshake(infoHash, clientID)
+	hs := NewHandshake(m.infoHash, m.clientID)
 	if err := hs.Perform(conn); err != nil {
-		l.Warn("peer.handshake.failed", slog.String("err", err.Error()))
+		l.Warn("handshake failed", slog.String("err", err.Error()))
 
 		_ = conn.Close()
 		return nil, err
@@ -80,26 +68,26 @@ func Connect(
 	_ = conn.SetReadDeadline(time.Time{})
 	_ = conn.SetWriteDeadline(time.Time{})
 
-	l.Info("peer.handshake.ok")
+	l.Info("handshake ok")
 
 	return &Peer{
-		conn:           conn,
+		m:              m,
 		log:            l,
+		conn:           conn,
 		AmChoking:      true,
 		AmInterested:   false,
 		PeerChoking:    true,
 		PeerInterested: false,
-		infoHash:       infoHash,
-		clientID:       clientID,
-		BF:             bitfield.New(pieceCount),
-		outq:           make(chan *Message, outboundLen),
+		BF:             bitfield.New(m.pieceCount),
+		// TODO:
+		outq: make(chan *Message, 50),
 	}, nil
 }
 
 func (p *Peer) Start(ctx context.Context) {
 	if p.started {
 		p.log.Warn(
-			"peer.start.ignored",
+			"start ignored",
 			slog.String("reason", "already started"),
 		)
 		return
@@ -112,14 +100,14 @@ func (p *Peer) Start(ctx context.Context) {
 	p.cancel = cancel
 	p.grp = g
 
-	p.log.Info("peer.start")
+	p.log.Info("start")
 
 	g.Go(func() error { return p.readLoop(gctx) })
 	g.Go(func() error { return p.writeLoop(gctx) })
 }
 
 func (p *Peer) Stop() error {
-	p.log.Info("peer.stop.begin")
+	p.log.Info("stop begin")
 
 	if p.cancel != nil {
 		p.cancel()
@@ -133,11 +121,11 @@ func (p *Peer) Stop() error {
 		p.grp = nil
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
-		p.log.Warn("peer.stop.end", slog.String("err", err.Error()))
+		p.log.Warn("stop end", slog.String("err", err.Error()))
 		return err
 	}
 
-	p.log.Info("peer.stop.end")
+	p.log.Info("stop end")
 
 	return nil
 }
@@ -172,7 +160,7 @@ func (p *Peer) SendCancel(b piece.Block) {
 
 func (p *Peer) readLoop(ctx context.Context) error {
 	l := p.log.With("loop", "read")
-	l.Info("loop.start")
+	l.Info("start")
 
 	lastRecv := time.Now()
 
@@ -192,7 +180,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			if time.Since(lastRecv) > 5*time.Minute {
 				l.Warn(
-					"peer.idle.timeout",
+					"idle timeout",
 					slog.Duration(
 						"idle",
 						time.Since(lastRecv),
@@ -205,7 +193,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 		}
 		if err != nil {
 			l.Warn(
-				"peer.read.error",
+				"read error",
 				slog.String("err", err.Error()),
 			)
 
@@ -213,7 +201,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 		}
 
 		if msg == nil { // keep-alive
-			l.Debug("peer.keepalive.recv")
+			l.Debug("keepalive recv")
 
 			lastRecv = time.Now()
 			continue
@@ -224,7 +212,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 		switch msg.ID {
 		case MsgChoke:
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String("message", MsgChoke.String()),
 			)
 
@@ -232,7 +220,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 		case MsgUnchoke:
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String("message", MsgUnchoke.String()),
 			)
 
@@ -240,7 +228,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 		case MsgInterested:
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String("message", MsgInterested.String()),
 			)
 
@@ -248,7 +236,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 		case MsgNotInterested:
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String(
 					"message",
 					MsgNotInterested.String(),
@@ -261,7 +249,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			p.BF = bitfield.FromBytes(msg.Payload)
 
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String(
 					"message",
 					MsgNotInterested.String(),
@@ -276,7 +264,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			}
 
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String("message", MsgHave.String()),
 				slog.Uint64("piece_index", uint64(pieceIdx)),
 			)
@@ -290,7 +278,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			}
 
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String("message", MsgPiece.String()),
 				slog.Uint64("index", uint64(idx)),
 				slog.Uint64("begin", uint64(begin)),
@@ -298,13 +286,13 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 		case MsgRequest:
 			l.Debug(
-				"peer.msg",
+				"message",
 				slog.String("message", MsgRequest.String()),
 			)
 
 		default:
 			l.Warn(
-				"peer.msg.unknown",
+				"message unknown",
 				slog.Int("message", int(msg.ID)),
 			)
 		}
@@ -314,17 +302,17 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 func (p *Peer) writeLoop(ctx context.Context) error {
 	l := p.log.With("loop", "write")
-	l.Info("loop.start")
+	l.Info("start")
 
-	lastKeepAliveAt := time.Now().Add(-keepAliveInterval)
-	keepAliveTicker := time.NewTicker(keepAliveInterval)
+	lastKeepAliveAt := time.Now().Add(-p.m.cfg.KeepAliveInterval)
+	keepAliveTicker := time.NewTicker(p.m.cfg.KeepAliveInterval)
 	defer keepAliveTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			l.Info(
-				"loop.exit",
+				"exit",
 				slog.String("reason", "ctx"),
 				slog.String("err", ctx.Err().Error()),
 			)
@@ -332,50 +320,52 @@ func (p *Peer) writeLoop(ctx context.Context) error {
 
 		case msg, ok := <-p.outq:
 			if !ok {
-				l.Info("outq.closed")
+				l.Info("outq closed")
 				return nil
 			}
 
 			if err := p.writeMessage(msg); err != nil {
 				l.Warn(
-					"peer.write.error",
+					"write failed",
 					slog.String("err", err.Error()),
 				)
 				return err
 			}
 
 			l.Debug(
-				"peer.msg.sent",
+				"msg sent",
 				slog.String("message", msg.ID.String()),
 			)
 
 		case <-keepAliveTicker.C:
-			if time.Since(lastKeepAliveAt) < keepAliveInterval {
+			if time.Since(
+				lastKeepAliveAt,
+			) < p.m.cfg.KeepAliveInterval {
 				continue
 			}
 			if err := p.writeMessage(nil); err != nil {
 				l.Warn(
-					"peer.keepalive.send.error",
+					"keepalive send error",
 					slog.String("err", err.Error()),
 				)
 				return err
 			}
 
 			lastKeepAliveAt = time.Now()
-			l.Debug("peer.keepalive.sent")
+			l.Debug("peer keepalive sent")
 		}
 	}
 }
 
 func (p *Peer) writeMessage(message *Message) error {
-	_ = p.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	_ = p.conn.SetWriteDeadline(time.Now().Add(p.m.cfg.WriteTimeout))
 	defer p.conn.SetWriteDeadline(time.Time{})
 
 	return WriteMessage(p.conn, message)
 }
 
 func (p *Peer) readMessage() (*Message, error) {
-	_ = p.conn.SetReadDeadline(time.Now().Add(readTimeout))
+	_ = p.conn.SetReadDeadline(time.Now().Add(p.m.cfg.ReadTimeout))
 	defer p.conn.SetReadDeadline(time.Time{})
 
 	return ReadMessage(p.conn)
