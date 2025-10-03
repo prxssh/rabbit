@@ -53,7 +53,10 @@ func New(data []byte) (*Torrent, error) {
 		return nil, err
 	}
 
-	storage, err := storage.OpenSingleFile("./data/download.torrent", size)
+	storage, err := storage.OpenSingleFile(
+		"./data/torrents/download.torrent",
+		size,
+	)
 	if err != nil {
 		return nil, err
 	}

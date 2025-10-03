@@ -10,6 +10,13 @@ import (
 	"github.com/prxssh/rabbit/pkg/utils/bitfield"
 )
 
+// Cancel represents a block request that should be cancelled.
+type Cancel struct {
+	Peer  netip.AddrPort // candidate peer
+	Piece int            // piece index
+	Begin int            // block offset
+}
+
 // PeerView is a read-only snapshot of what the picker needs to decide whether
 // THIS peer can fetch something right now.
 //
@@ -82,112 +89,118 @@ type Config struct {
 	// EndgameDupPerBlock, when Endgame is enabled, caps the number of
 	// duplicate owners (peers concurrently fetching the same block).
 	EndgameDupPerBlock int
+
+	// MaxRequestsPerBlocks limit how many duplicate blocks can be requested
+	// from a single piece at once, preventing over-downloading of
+	// individual blocks.
+	MaxRequestsPerBlocks int
 }
 
 func withDefaultConfig() Config {
 	return Config{
-		DownloadStrategy:    StrategySequential,
-		MaxInflightRequests: 20,
-		RequestTimeout:      30 * time.Second,
-		EndgameDupPerBlock:  2,
+		DownloadStrategy:     StrategySequential,
+		MaxInflightRequests:  20,
+		RequestTimeout:       30 * time.Second,
+		EndgameDupPerBlock:   2,
+		MaxRequestsPerBlocks: 4,
 	}
 }
 
-// BlockState tracks the lifecycle of an individual block inside a piece.
-type BlockState uint8
+// blockState tracks the lifecycle of an individual block inside a piece.
+type blockState uint8
 
 const (
-	// BlockWant: not yet requested by anyone — eligible for assignment.
-	BlockWant BlockState = iota
+	// blockWant: not yet requested by anyone — eligible for assignment.
+	blockWant blockState = iota
 
-	// BlockInflight: requested and waiting for data. In endgame, there may
+	// blockInflight: requested and waiting for data. In endgame, there may
 	// be multiple owners (see PieceState.Owners) fetching the same block.
-	BlockInflight
+	blockInflight
 
-	// BlockDone: fully received and written. Done blocks must never have
+	// blockDone: fully received and written. Done blocks must never have
 	// owners.
-	BlockDone
+	blockDone
 )
 
-// OwnerMeta tracks per-owner details for a single block.
-type OwnerMeta struct {
-	SentAt  time.Time
-	Retries uint8
+// ownerMeta tracks per-owner details for a single block.
+type ownerMeta struct {
+	sentAt  time.Time
+	retries uint8
 }
 
-// PieceState describes one piece’s static metadata and dynamic progress.
-type PieceState struct {
-	// Index is the zero-based piece index within the torrent.
-	Index int
+type block struct {
+	// pendingRequests tracks how many peers are currently downloading this
+	// block.
+	pendingRequests int
 
-	// Length is the exact byte length of this piece. For all pieces except
+	// status is this block's current lifecycle state
+	// (pending/in-flight/complete).
+	status blockState
+
+	// owners tracks, the set of peers currently assigned this block to
+	// fetch it. Each entry is a map from peer address to OwnerMeta.
+	owners map[netip.AddrPort]*ownerMeta
+}
+
+// pieceState describes one piece’s static metadata and dynamic progress.
+type pieceState struct {
+	// index is the zero-based piece index within the torrent.
+	index int
+
+	// length is the exact byte length of this piece. For all pieces except
 	// the last, it will equal the torrent's piece length; the last may be
 	// shorter.
-	Length int
+	length int
 
-	// Blocks is the number of requestable blocks in this piece. All blocks
+	// blockCount is the number of requestable blocks in this piece. All
+	// blocks
 	// except the last are BlockSize long; see LastBlock.
-	Blocks int
+	blockCount int
 
-	// LastBlock is the byte size of the final block in this piece. If
+	// lastBlock is the byte size of the final block in this piece. If
 	// Blocks==1, LastBlock == Length. Otherwise LastBlock == Length -
 	// (Blocks-1)*BlockSize.
-	LastBlock int
+	lastBlock int
 
-	// IsLastPiece is true for the last piece of the torrent (useful for
+	// isLastPiece is true for the last piece of the torrent (useful for
 	// edge cases).
-	IsLastPiece bool
+	isLastPiece bool
 
-	// Availability is the rarity counter: how many connected peers
+	// sha is the expected SHA-1 of the *piece* (20 bytes from the
+	// metainfo).
+	sha [sha1.Size]byte
+
+	// availability is the rarity counter: how many connected peers
 	// currently advertise this piece. Maintained by your bitfield/HAVE
 	// event handlers.
-	Availability int
+	availability int
 
-	// Priority is an optional bias (lower value = more important). Useful
+	// priority is an optional bias (lower value = more important). Useful
 	// for StrategyPriority or user-driven file selection/streaming.
-	Priority int
+	priority int
 
-	// DoneBlocks is a fast counter of how many blocks have reached
+	// doneBlocks is a fast counter of how many blocks have reached
 	// BlockDone. When DoneBlocks == Blocks the piece is byte-complete and
 	// ready to verify.
-	DoneBlocks int
+	doneBlocks int
 
-	// Verified is true once the piece has been hashed and matched SHA. A
+	// verified is true once the piece has been hashed and matched SHA. A
 	// verified piece should have all State==BlockDone and no Owners for any
 	// block.
-	Verified bool
+	verified bool
 
-	// State holds the per-block lifecycle (want/inflight/done).
-	// len(State)==Blocks.
-	State []BlockState
+	// blocks holds all blocks in this piece, indexed by block offset.
+	blocks []*block
+}
 
-	// Owners tracks, per block, the set of peers currently assigned to
-	// fetch it. Each entry is a map from peer address to OwnerMeta (send
-	// time, retries, etc.). In normal mode the set is empty or size 1. In
-	// endgame it may contain up to Cfg.EndgameDupPerBlock distinct peers.
-	// When State == BlockDone, this map
-	// MUST be empty.
-	Owners []map[netip.AddrPort]*OwnerMeta
-
-	// SentAt records the last time a request for this block was sent. Used
-	// for timeouts and adaptive retry logic. Zero time means "never sent".
-	SentAt []time.Time
-
-	// Retries tracks how many times this specific block has been
-	// re-assigned due to timeout/failure. Can backoff or penalize peers
-	// using this data.
-	Retries []uint8
-
-	// SHA is the expected SHA-1 of the *piece* (20 bytes from the
-	// metainfo).
-	SHA [sha1.Size]byte
+// assignment represents a single block assigned to a peer.
+type assignment struct {
+	pieceIdx uint32
+	blockIdx uint32
 }
 
 // Picker is the global download planner/state holder for a single torrent.
 type Picker struct {
-	// Cfg holds strategy and timeout knobs.
-	Cfg Config
-
 	// BlockLength mirrors BlockSize for clarity; kept as a field in case
 	// you want to support different block sizes (e.g., for testing).
 	BlockLength int
@@ -199,40 +212,48 @@ type Picker struct {
 	// PieceCount = len(Pieces).
 	PieceCount int
 
-	// Pieces is the complete set of per-piece states, indexed by piece
-	// index.
-	Pieces []*PieceState
+	// Cfg holds picker configuration.
+	cfg Config
 
-	// NextPiece and NextBlock act as cursors for StrategySequential. They
+	// pieces is the complete set of per-piece states, indexed by piece
+	// index.
+	pieces []*pieceState
+
+	// nextPiece and nextBlock act as cursors for StrategySequential. They
 	// can be ignored by other strategies that compute candidates
 	// differently.
-	NextPiece int
-	NextBlock int
+	nextPiece int
+	nextBlock int
 
-	// Wanted is an optional "selective download" filter. If non-nil, only
+	// wanted is an optional "selective download" filter. If non-nil, only
 	// pieces with Wanted[index]==true are eligible. If nil, all pieces are
 	// eligible.
-	Wanted map[int]bool
+	wanted map[int]bool
 
-	// Endgame toggles duplication of remaining not-done blocks. When
+	// endgame toggles duplication of remaining not-done blocks. When
 	// enabled, you should allow multiple Owners per block up to
 	// Cfg.EndgameDupPerBlock and cancel losers as soon as the first copy
 	// arrives.
-	Endgame bool
+	endgame bool
 
-	// RemainingBlocks is a global counter of blocks whose State !=
+	// remainingBlocks is a global counter of blocks whose State !=
 	// BlockDone. Once it drops below a small threshold (e.g., 32), you
 	// typically enable Endgame. When it reaches 0, the torrent is
 	// byte-complete.
-	RemainingBlocks int
+	remainingBlocks int
 
 	// rng is used for StrategyRandomFirst and tie-breaking when multiple
 	// pieces have identical rank (e.g., same rarity and priority).
 	rng *rand.Rand
 	mut sync.RWMutex
 
-	ownersByPeer map[netip.AddrPort]map[uint64]struct{}
-	outByPeer    map[netip.AddrPort]int
+	// peerBlockAssignments is a reverse index mapping each peer to the set
+	// of blocks they are currently assigned to fetch. Allows for fast
+	// cleanup when a peer disconnects.
+	peerBlockAssignments map[netip.AddrPort]map[uint64]struct{}
+
+	// peerInflightCount tracks the number of outstanding (inflight) block requests per peer. Enforces Config.MaxInflightRequests limit. When a peer reaches this limit, NextForPeer() returns nil until some requests complete or timeout. This prevents any single peer from monopolizing the download pipeline.
+	peerInflightCount map[netip.AddrPort]int
 }
 
 func NewPicker(
@@ -255,7 +276,7 @@ func NewPicker(
 	}
 
 	totalBlocks := 0
-	pieces := make([]*PieceState, n)
+	pieces := make([]*pieceState, n)
 
 	for i := 0; i < n; i++ {
 		plen := int(pieceLength)
@@ -263,52 +284,47 @@ func NewPicker(
 			plen = int(lastPieceLen)
 		}
 
-		blocks := (plen + BlockLength - 1) / BlockLength
-		last := plen - (blocks-1)*BlockLength
-		if blocks == 1 {
+		blockCount := (plen + BlockLength - 1) / BlockLength
+		totalBlocks += blockCount
+
+		last := plen - (blockCount-1)*BlockLength
+		if blockCount == 1 {
 			last = plen
 		}
 
-		pieces[i] = &PieceState{
-			Index:       i,
-			Length:      int(plen),
-			Blocks:      blocks,
-			LastBlock:   last,
-			IsLastPiece: i == n-1,
-			State:       make([]BlockState, blocks),
-			Owners: make(
-				[]map[netip.AddrPort]*OwnerMeta,
-				blocks,
-			),
-			SentAt:   make([]time.Time, blocks),
-			Retries:  make([]uint8, blocks),
-			SHA:      pieceHashes[i],
-			Verified: false,
+		blocks := make([]*block, blockCount)
+		for i := 0; i < blockCount; i++ {
+			blocks[i] = &block{
+				owners: make(map[netip.AddrPort]*ownerMeta),
+			}
 		}
 
-		for b := 0; b < blocks; b++ {
-			pieces[i].Owners[b] = make(
-				map[netip.AddrPort]*OwnerMeta,
-			)
+		pieces[i] = &pieceState{
+			index:       i,
+			lastBlock:   last,
+			verified:    false,
+			blockCount:  blockCount,
+			isLastPiece: i == n-1,
+			length:      int(plen),
+			sha:         pieceHashes[i],
+			blocks:      blocks,
 		}
-
-		totalBlocks += blocks
 	}
 
 	return &Picker{
-		Cfg:             c,
-		PieceCount:      n,
-		Pieces:          pieces,
-		LastPieceLen:    lastPieceLen,
-		BlockLength:     BlockLength,
-		NextPiece:       0,
-		NextBlock:       0,
-		Wanted:          nil,
-		Endgame:         false,
-		rng:             rng,
-		RemainingBlocks: totalBlocks,
-		ownersByPeer:    make(map[netip.AddrPort]map[uint64]struct{}),
-		outByPeer:       make(map[netip.AddrPort]int),
+		cfg:                  c,
+		PieceCount:           n,
+		pieces:               pieces,
+		LastPieceLen:         lastPieceLen,
+		BlockLength:          BlockLength,
+		nextPiece:            0,
+		nextBlock:            0,
+		wanted:               nil,
+		endgame:              false,
+		rng:                  rng,
+		remainingBlocks:      totalBlocks,
+		peerBlockAssignments: make(map[netip.AddrPort]map[uint64]struct{}),
+		peerInflightCount:    make(map[netip.AddrPort]int),
 	}
 }
 
@@ -316,7 +332,7 @@ func (pk *Picker) PiceHash(idx int) [sha1.Size]byte {
 	pk.mut.RLock()
 	defer pk.mut.RUnlock()
 
-	return pk.Pieces[idx].SHA
+	return pk.pieces[idx].sha
 }
 
 // CurrentPieceIndex returns the first piece that is not yet verified.
@@ -325,7 +341,7 @@ func (pk *Picker) CurrentPieceIndex() (int, bool) {
 	defer pk.mut.RUnlock()
 
 	for i := 0; i < pk.PieceCount; i++ {
-		if !pk.Pieces[i].Verified {
+		if !pk.pieces[i].verified {
 			return i, true
 		}
 	}
@@ -339,7 +355,7 @@ func (pk *Picker) CapacityForPeer(peer netip.AddrPort) int {
 	pk.mut.RLock()
 	defer pk.mut.RUnlock()
 
-	left := pk.Cfg.MaxInflightRequests - pk.outByPeer[peer]
+	left := pk.cfg.MaxInflightRequests - len(pk.peerBlockAssignments[peer])
 	if left < 0 {
 		return 0
 	}
@@ -348,16 +364,23 @@ func (pk *Picker) CapacityForPeer(peer netip.AddrPort) int {
 
 // OnPeerGone: drop this peer from every block’s owner-set and reclaim any
 // blocks that now have no owners (i.e., nobody is fetching them).
-func (pk *Picker) OnPeerGone(peer netip.AddrPort) {
+func (pk *Picker) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
 	pk.mut.Lock()
 	defer pk.mut.Unlock()
 
-	keys := pk.ownersByPeer[peer]
+	for i := 0; i < pk.PieceCount; i++ {
+		if bf.Has(i) {
+			pk.pieces[i].availability--
+		}
+	}
+
+	keys := pk.peerBlockAssignments[peer]
 	if len(keys) == 0 {
-		delete(pk.ownersByPeer, peer)
-		pk.outByPeer[peer] = 0
+		delete(pk.peerBlockAssignments, peer)
+		pk.peerInflightCount[peer] = 0
 		return
 	}
+
 	for key := range keys {
 		pieceIdx := int(uint32(key >> 32))
 		blockIdx := int(uint32(key))
@@ -365,29 +388,23 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort) {
 			continue
 		}
 
-		ps := pk.Pieces[pieceIdx]
-		if blockIdx < 0 || blockIdx >= ps.Blocks {
+		ps := pk.pieces[pieceIdx]
+		if blockIdx < 0 || blockIdx >= ps.blockCount {
 			continue
 		}
-		delete(ps.Owners[blockIdx], peer)
+		delete(ps.blocks[blockIdx].owners, peer)
 
-		if ps.State[blockIdx] == BlockInflight &&
-			len(ps.Owners[blockIdx]) == 0 {
-			ps.State[blockIdx] = BlockWant
-			if pieceIdx == pk.NextPiece && blockIdx < pk.NextBlock {
-				pk.NextBlock = blockIdx
+		if ps.blocks[blockIdx].status == blockInflight &&
+			len(ps.blocks[blockIdx].owners) == 0 {
+			ps.blocks[blockIdx].status = blockWant
+			if pieceIdx == pk.nextPiece && blockIdx < pk.nextBlock {
+				pk.nextBlock = blockIdx
 			}
 		}
 	}
 
-	delete(pk.ownersByPeer, peer)
-	pk.outByPeer[peer] = 0
-}
-
-type Cancel struct {
-	Peer  netip.AddrPort
-	Piece int
-	Begin int
+	delete(pk.peerBlockAssignments, peer)
+	pk.peerInflightCount[peer] = 0
 }
 
 // OnBlockReceived marks the block DONE, clears owners, and returns a list of
@@ -403,15 +420,15 @@ func (pk *Picker) OnBlockReceived(
 		return false, nil
 	}
 
-	ps := pk.Pieces[pieceIdx]
+	ps := pk.pieces[pieceIdx]
 	bi := begin / pk.BlockLength
-	if bi < 0 || bi >= ps.Blocks {
+	if bi < 0 || bi >= ps.blockCount {
 		return false, nil
 	}
 
 	var cancels []Cancel
 
-	for other := range ps.Owners[bi] {
+	for other := range ps.blocks[bi].owners {
 		if other != peer {
 			cancels = append(
 				cancels,
@@ -419,21 +436,21 @@ func (pk *Picker) OnBlockReceived(
 			)
 		}
 
-		delete(pk.ownersByPeer[other], packKey(pieceIdx, bi))
-		pk.outByPeer[other]--
-		if pk.outByPeer[other] < 0 {
-			pk.outByPeer[other] = 0
+		delete(pk.peerBlockAssignments[other], packKey(pieceIdx, bi))
+		pk.peerInflightCount[other]--
+		if pk.peerInflightCount[other] < 0 {
+			pk.peerInflightCount[other] = 0
 		}
 	}
-	ps.Owners[bi] = make(map[netip.AddrPort]*OwnerMeta)
+	ps.blocks[bi].owners = make(map[netip.AddrPort]*ownerMeta)
 
-	if ps.State[bi] != BlockDone {
-		ps.State[bi] = BlockDone
-		ps.DoneBlocks++
-		pk.RemainingBlocks--
+	if ps.blocks[bi].status != blockDone {
+		ps.blocks[bi].status = blockDone
+		ps.doneBlocks++
+		pk.remainingBlocks--
 	}
 
-	return ps.DoneBlocks == ps.Blocks, cancels
+	return ps.doneBlocks == ps.blockCount, cancels
 }
 
 // MarkPieceVerified stamps the current sequential piece as verified on success,
@@ -444,7 +461,7 @@ func (pk *Picker) MarkPieceVerified(ok bool) {
 
 	idx := -1
 	for i := 0; i < pk.PieceCount; i++ {
-		if !pk.Pieces[i].Verified {
+		if !pk.pieces[i].verified {
 			idx = i
 			break
 		}
@@ -453,27 +470,25 @@ func (pk *Picker) MarkPieceVerified(ok bool) {
 		return
 	}
 
-	ps := pk.Pieces[idx]
+	ps := pk.pieces[idx]
 	if ok {
-		ps.Verified = true
-		if pk.NextPiece == idx {
-			pk.NextPiece++
-			pk.NextBlock = 0
+		ps.verified = true
+		if pk.nextPiece == idx {
+			pk.nextPiece++
+			pk.nextBlock = 0
 		}
 		return
 	}
 
 	// Bad hash: revert piece to WANT (owners must already be empty when
 	// DONE).
-	for b := 0; b < ps.Blocks; b++ {
-		if ps.State[b] == BlockDone {
-			pk.RemainingBlocks++
+	for b := 0; b < ps.blockCount; b++ {
+		if ps.blocks[b].status == blockDone {
+			pk.remainingBlocks++
 		}
 
-		ps.State[b] = BlockWant
-		ps.SentAt[b] = time.Time{}
-		ps.Retries[b] = 0
-		ps.Owners[b] = make(map[netip.AddrPort]*OwnerMeta)
+		ps.blocks[b].status = blockWant
+		ps.blocks[b].owners = make(map[netip.AddrPort]*ownerMeta)
 	}
 }
 
@@ -486,57 +501,56 @@ func (pk *Picker) NextForPeer(pv *PeerView) *Request {
 	pk.mut.Lock()
 	defer pk.mut.Unlock()
 
-	if pk.outByPeer[pv.Peer] >= pk.Cfg.MaxInflightRequests {
+	if pk.peerInflightCount[pv.Peer] >= pk.cfg.MaxInflightRequests {
 		return nil
 	}
 
-	for pk.NextPiece < pk.PieceCount && pk.Pieces[pk.NextPiece].Verified {
-		pk.NextPiece++
-		pk.NextBlock = 0
+	for pk.nextPiece < pk.PieceCount && pk.pieces[pk.nextPiece].verified {
+		pk.nextPiece++
+		pk.nextBlock = 0
 	}
-	if pk.NextPiece >= pk.PieceCount {
+	if pk.nextPiece >= pk.PieceCount {
 		return nil
 	}
-	ps := pk.Pieces[pk.NextPiece]
+	ps := pk.pieces[pk.nextPiece]
 
-	if pk.Wanted != nil && !pk.Wanted[ps.Index] {
-		return nil
-	}
-
-	if !pv.Has.Has(ps.Index) {
+	if pk.wanted != nil && !pk.wanted[ps.index] {
 		return nil
 	}
 
-	bi := pk.NextBlock
-	for bi < ps.Blocks && ps.State[bi] != BlockWant {
+	if !pv.Has.Has(ps.index) {
+		return nil
+	}
+
+	bi := pk.nextBlock
+	for bi < ps.blockCount && ps.blocks[bi].status != blockWant {
 		bi++
 	}
-	if bi >= ps.Blocks {
+	if bi >= ps.blockCount {
 		return nil
 	}
 
 	begin := bi * pk.BlockLength
 	length := pk.BlockLength
-	if bi == ps.Blocks-1 {
-		length = ps.LastBlock
+	if bi == ps.blockCount-1 {
+		length = ps.lastBlock
 	}
 
-	ps.State[bi] = BlockInflight
-	ps.Retries[bi]++
-	om := &OwnerMeta{SentAt: time.Now(), Retries: ps.Retries[bi]}
-	ps.Owners[bi][pv.Peer] = om
+	ps.blocks[bi].status = blockInflight
+	om := &ownerMeta{sentAt: time.Now(), retries: 0}
+	ps.blocks[bi].owners[pv.Peer] = om
 
-	key := packKey(ps.Index, bi)
-	if pk.ownersByPeer[pv.Peer] == nil {
-		pk.ownersByPeer[pv.Peer] = make(map[uint64]struct{})
+	key := packKey(ps.index, bi)
+	if pk.peerBlockAssignments[pv.Peer] == nil {
+		pk.peerBlockAssignments[pv.Peer] = make(map[uint64]struct{})
 	}
-	pk.ownersByPeer[pv.Peer][key] = struct{}{}
-	pk.outByPeer[pv.Peer]++
-	pk.NextBlock = bi + 1
+	pk.peerBlockAssignments[pv.Peer][key] = struct{}{}
+	pk.peerInflightCount[pv.Peer]++
+	pk.nextBlock = bi + 1
 
 	return &Request{
 		Peer:   pv.Peer,
-		Piece:  ps.Index,
+		Piece:  ps.index,
 		Begin:  begin,
 		Length: length,
 	}
@@ -551,32 +565,50 @@ func (pk *Picker) OnTimeout(peer netip.AddrPort, pieceIdx, begin int) {
 		return
 	}
 
-	ps := pk.Pieces[pieceIdx]
+	ps := pk.pieces[pieceIdx]
 	bi := begin / pk.BlockLength
-	if bi < 0 || bi >= ps.Blocks {
+	if bi < 0 || bi >= ps.blockCount {
 		return
 	}
 
-	if _, had := ps.Owners[bi][peer]; !had {
+	if _, had := ps.blocks[bi].owners[peer]; !had {
 		return
 	}
-	delete(ps.Owners[bi], peer)
-	delete(pk.ownersByPeer[peer], packKey(pieceIdx, bi))
-	pk.outByPeer[peer]--
-	if pk.outByPeer[peer] < 0 {
-		pk.outByPeer[peer] = 0
+	delete(ps.blocks[bi].owners, peer)
+	delete(pk.peerBlockAssignments[peer], packKey(pieceIdx, bi))
+	pk.peerInflightCount[peer]--
+	if pk.peerInflightCount[peer] < 0 {
+		pk.peerInflightCount[peer] = 0
 	}
 
 	// If nobody else is fetching it, return to WANT.
-	if ps.State[bi] == BlockInflight && len(ps.Owners[bi]) == 0 {
-		ps.State[bi] = BlockWant
+	if ps.blocks[bi].status == blockInflight && len(ps.blocks[bi].owners) == 0 {
+		ps.blocks[bi].status = blockWant
 		// Pull back sequential cursor to retry sooner.
-		if pieceIdx == pk.NextPiece {
-			if b := bi; b < pk.NextBlock {
-				pk.NextBlock = b
+		if pieceIdx == pk.nextPiece {
+			if b := bi; b < pk.nextBlock {
+				pk.nextBlock = b
 			}
 		}
 	}
+}
+
+func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
+	pk.mut.Lock()
+	defer pk.mut.Unlock()
+
+	for i := 0; i < pk.PieceCount; i++ {
+		if bf.Has(i) {
+			pk.pieces[i].availability++
+		}
+	}
+}
+
+func (pk *Picker) OnPeerHave(peer netip.AddrPort, pieceIdx int) {
+	pk.mut.Lock()
+	defer pk.mut.Unlock()
+
+	pk.pieces[pieceIdx].availability++
 }
 
 // packKey encodes (piece, block) into a compact uint64 for reverse indexing.

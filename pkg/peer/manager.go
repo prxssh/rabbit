@@ -16,6 +16,7 @@ import (
 type Config struct {
 	MaxPeers                   int
 	MaxInflightRequestsPerPeer int
+	MaxRequestsPerPiece        int
 	ReadTimeout                time.Duration
 	WriteTimeout               time.Duration
 	DialTimeout                time.Duration
@@ -26,6 +27,7 @@ func withDefaultConfig() Config {
 	return Config{
 		MaxPeers:                   50,
 		MaxInflightRequestsPerPeer: 5,
+		MaxRequestsPerPiece:        4,
 		ReadTimeout:                45 * time.Second,
 		WriteTimeout:               45 * time.Second,
 		DialTimeout:                30 * time.Second,

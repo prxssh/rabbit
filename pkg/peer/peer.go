@@ -172,7 +172,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 		if err != nil {
 			l.Warn("read error", slog.String("err", err.Error()))
 
-			p.m.picker.OnPeerGone(p.addr)
+			p.m.picker.OnPeerGone(p.addr, p.bf)
 			return err
 		}
 
@@ -241,6 +241,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			if !ok {
 				continue
 			}
+			p.m.picker.OnPeerHave(p.addr, int(pieceIdx))
 
 			l.Debug(
 				"message",
@@ -249,6 +250,8 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			)
 
 			p.bf.Set(int(pieceIdx))
+			p.m.picker.OnPeerBitfield(p.addr, p.bf)
+
 			if p.shouldBeInterested() && !p.amInterested {
 				p.sendInterested()
 			}
