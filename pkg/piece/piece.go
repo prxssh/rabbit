@@ -24,9 +24,10 @@ type Cancel struct {
 // per-peer pipeline capacity (if you want the peer to limit itself). If you
 // centralize capacity in the picker, Capacity can be ignored by NextForPeer.
 type PeerView struct {
-	Peer     netip.AddrPort    // the candidate peer
-	Has      bitfield.Bitfield // peer's current bitfield
-	Unchoked bool              // must be true to issue requests
+	Peer      netip.AddrPort    // the candidate peer
+	Has       bitfield.Bitfield // peer's current bitfield
+	Unchoked  bool              // must be true to issue requests
+	Pipelined int               // number of pieces to return
 }
 
 // Request is a concrete plan for a single block request the writer can send.
@@ -219,6 +220,12 @@ type Picker struct {
 	// index.
 	pieces []*pieceState
 
+	// availabilityBuckets maps availability count to pieces with that
+	// availability. availabilityBuckets[3] = all pieces that exactly have 3
+	// peers. When availability changes form 5->6 just move pieces from
+	// availabilityBuckets[5] to availabilityBuckets[6].
+	availabilityBuckets map[int]map[int]struct{}
+
 	// nextPiece and nextBlock act as cursors for StrategySequential. They
 	// can be ignored by other strategies that compute candidates
 	// differently.
@@ -252,7 +259,11 @@ type Picker struct {
 	// cleanup when a peer disconnects.
 	peerBlockAssignments map[netip.AddrPort]map[uint64]struct{}
 
-	// peerInflightCount tracks the number of outstanding (inflight) block requests per peer. Enforces Config.MaxInflightRequests limit. When a peer reaches this limit, NextForPeer() returns nil until some requests complete or timeout. This prevents any single peer from monopolizing the download pipeline.
+	// peerInflightCount tracks the number of outstanding (inflight) block
+	// requests per peer. Enforces Config.MaxInflightRequests limit. When a
+	// peer reaches this limit, NextForPeer() returns nil until some
+	// requests complete or timeout. This prevents any single peer from
+	// monopolizing the download pipeline.
 	peerInflightCount map[netip.AddrPort]int
 }
 
@@ -311,6 +322,14 @@ func NewPicker(
 		}
 	}
 
+	peerBlockAssignments := make(map[netip.AddrPort]map[uint64]struct{})
+
+	availabilityBuckets := make(map[int]map[int]struct{})
+	availabilityBuckets[0] = make(map[int]struct{})
+	for i := 0; i < n; i++ {
+		availabilityBuckets[0][i] = struct{}{}
+	}
+
 	return &Picker{
 		cfg:                  c,
 		PieceCount:           n,
@@ -323,7 +342,8 @@ func NewPicker(
 		endgame:              false,
 		rng:                  rng,
 		remainingBlocks:      totalBlocks,
-		peerBlockAssignments: make(map[netip.AddrPort]map[uint64]struct{}),
+		availabilityBuckets:  availabilityBuckets,
+		peerBlockAssignments: peerBlockAssignments,
 		peerInflightCount:    make(map[netip.AddrPort]int),
 	}
 }
@@ -369,9 +389,11 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
 	defer pk.mut.Unlock()
 
 	for i := 0; i < pk.PieceCount; i++ {
-		if bf.Has(i) {
-			pk.pieces[i].availability--
+		if !bf.Has(i) {
+			continue
 		}
+
+		pk.updatePieceAvailability(i, -1)
 	}
 
 	keys := pk.peerBlockAssignments[peer]
@@ -493,66 +515,34 @@ func (pk *Picker) MarkPieceVerified(ok bool) {
 }
 
 // NextForPeer returns atmost ONE request for this peer and registers ownership.
-func (pk *Picker) NextForPeer(pv *PeerView) *Request {
+func (pk *Picker) NextForPeer(pv *PeerView) []*Request {
 	if !pv.Unchoked {
 		return nil
 	}
 
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mut.RLock()
+	defer pk.mut.RUnlock()
 
-	if pk.peerInflightCount[pv.Peer] >= pk.cfg.MaxInflightRequests {
-		return nil
+	limit := pk.cfg.MaxInflightRequests - pv.Pipelined
+	if limit < 0 {
+		limit = 0
 	}
 
-	for pk.nextPiece < pk.PieceCount && pk.pieces[pk.nextPiece].verified {
-		pk.nextPiece++
-		pk.nextBlock = 0
-	}
-	if pk.nextPiece >= pk.PieceCount {
-		return nil
-	}
-	ps := pk.pieces[pk.nextPiece]
-
-	if pk.wanted != nil && !pk.wanted[ps.index] {
-		return nil
-	}
-
-	if !pv.Has.Has(ps.index) {
-		return nil
-	}
-
-	bi := pk.nextBlock
-	for bi < ps.blockCount && ps.blocks[bi].status != blockWant {
-		bi++
-	}
-	if bi >= ps.blockCount {
-		return nil
-	}
-
-	begin := bi * pk.BlockLength
-	length := pk.BlockLength
-	if bi == ps.blockCount-1 {
-		length = ps.lastBlock
-	}
-
-	ps.blocks[bi].status = blockInflight
-	om := &ownerMeta{sentAt: time.Now(), retries: 0}
-	ps.blocks[bi].owners[pv.Peer] = om
-
-	key := packKey(ps.index, bi)
-	if pk.peerBlockAssignments[pv.Peer] == nil {
-		pk.peerBlockAssignments[pv.Peer] = make(map[uint64]struct{})
-	}
-	pk.peerBlockAssignments[pv.Peer][key] = struct{}{}
-	pk.peerInflightCount[pv.Peer]++
-	pk.nextBlock = bi + 1
-
-	return &Request{
-		Peer:   pv.Peer,
-		Piece:  ps.index,
-		Begin:  begin,
-		Length: length,
+	switch pk.cfg.DownloadStrategy {
+	case StrategySequential:
+		return pk.selectSequentialPiecesToDownload(
+			pv.Peer,
+			pv.Has,
+			limit,
+		)
+	case StrategyRarestFirst:
+		return pk.selectRarestPiecesForDownload(pv.Peer, pv.Has, limit)
+	default:
+		return pk.selectRandomFirstPiecesForDownload(
+			pv.Peer,
+			pv.Has,
+			limit,
+		)
 	}
 }
 
@@ -582,7 +572,8 @@ func (pk *Picker) OnTimeout(peer netip.AddrPort, pieceIdx, begin int) {
 	}
 
 	// If nobody else is fetching it, return to WANT.
-	if ps.blocks[bi].status == blockInflight && len(ps.blocks[bi].owners) == 0 {
+	if ps.blocks[bi].status == blockInflight &&
+		len(ps.blocks[bi].owners) == 0 {
 		ps.blocks[bi].status = blockWant
 		// Pull back sequential cursor to retry sooner.
 		if pieceIdx == pk.nextPiece {
@@ -598,9 +589,11 @@ func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
 	defer pk.mut.Unlock()
 
 	for i := 0; i < pk.PieceCount; i++ {
-		if bf.Has(i) {
-			pk.pieces[i].availability++
+		if !bf.Has(i) {
+			continue
 		}
+
+		pk.updatePieceAvailability(i, 1)
 	}
 }
 
@@ -608,10 +601,238 @@ func (pk *Picker) OnPeerHave(peer netip.AddrPort, pieceIdx int) {
 	pk.mut.Lock()
 	defer pk.mut.Unlock()
 
-	pk.pieces[pieceIdx].availability++
+	pk.updatePieceAvailability(pieceIdx, 1)
 }
 
 // packKey encodes (piece, block) into a compact uint64 for reverse indexing.
 func packKey(pieceIdx, blockIdx int) uint64 {
 	return (uint64(uint32(pieceIdx)) << 32) | uint64(uint32(blockIdx))
+}
+
+func (pk *Picker) updatePieceAvailability(idx, val int) {
+	oldAvail := pk.pieces[idx].availability
+	newAvail := oldAvail + val
+
+	delete(pk.availabilityBuckets[oldAvail], idx)
+	if len(pk.availabilityBuckets[oldAvail]) <= 0 {
+		delete(pk.availabilityBuckets, oldAvail)
+	}
+
+	if pk.availabilityBuckets[newAvail] == nil {
+		pk.availabilityBuckets[newAvail] = make(map[int]struct{})
+	}
+	pk.availabilityBuckets[newAvail][idx] = struct{}{}
+	pk.pieces[idx].availability = newAvail
+}
+
+func (pk *Picker) selectSequentialPiecesToDownload(
+	peer netip.AddrPort,
+	bf bitfield.Bitfield,
+	limit int,
+) []*Request {
+	for pk.nextPiece < pk.PieceCount && pk.pieces[pk.nextPiece].verified {
+		pk.nextPiece++
+		pk.nextBlock = 0
+	}
+	if pk.nextPiece >= pk.PieceCount {
+		return nil
+	}
+
+	ps := pk.pieces[pk.nextPiece]
+	if pk.wanted != nil && !pk.wanted[ps.index] {
+		return nil
+	}
+	if !bf.Has(ps.index) {
+		return nil
+	}
+
+	requests := make([]*Request, 0, limit)
+	bi := pk.nextBlock
+
+	for len(requests) < limit && bi < ps.blockCount {
+		blk := ps.blocks[bi]
+		if blk.status != blockWant ||
+			blk.pendingRequests >= pk.cfg.MaxRequestsPerBlocks {
+			bi++
+			continue
+		}
+
+		begin := bi * pk.BlockLength
+		length := pk.BlockLength
+		if bi == ps.blockCount-1 {
+			length = ps.lastBlock
+		}
+
+		ps.blocks[bi].status = blockInflight
+		ps.blocks[bi].pendingRequests++
+		ps.blocks[bi].owners[peer] = &ownerMeta{sentAt: time.Now()}
+
+		key := packKey(ps.index, bi)
+		if pk.peerBlockAssignments[peer] == nil {
+			pk.peerBlockAssignments[peer] = make(
+				map[uint64]struct{},
+			)
+		}
+		pk.peerBlockAssignments[peer][key] = struct{}{}
+		pk.peerInflightCount[peer]++
+		pk.nextBlock = bi + 1
+
+		requests = append(requests, &Request{
+			Peer:   peer,
+			Piece:  ps.index,
+			Begin:  begin,
+			Length: length,
+		})
+	}
+
+	return requests
+}
+
+func (pk *Picker) selectRarestPiecesForDownload(
+	peer netip.AddrPort,
+	bf bitfield.Bitfield,
+	limit int,
+) []*Request {
+	n := len(pk.availabilityBuckets[0])
+	requests := make([]*Request, 0, limit)
+
+	for i := 0; i < n && len(requests) < limit; i++ {
+		bucket, exists := pk.availabilityBuckets[i]
+		if !exists || len(bucket) == 0 {
+			continue
+		}
+
+		for pieceIdx := range bucket {
+			if len(requests) >= limit {
+				break
+			}
+
+			ps := pk.pieces[pieceIdx]
+			if ps.verified {
+				continue
+			}
+			if !bf.Has(pieceIdx) {
+				continue
+			}
+			if pk.wanted != nil && !pk.wanted[pieceIdx] {
+				continue
+			}
+
+			for bi := 0; bi < ps.blockCount && len(requests) < limit; bi++ {
+				blk := ps.blocks[bi]
+				if blk.status != blockWant {
+					continue
+				}
+				if blk.pendingRequests >= pk.cfg.MaxRequestsPerBlocks {
+					continue
+				}
+				begin := bi * pk.BlockLength
+				length := pk.BlockLength
+				if bi == ps.blockCount-1 {
+					length = ps.lastBlock
+				}
+
+				ps.blocks[bi].status = blockInflight
+				ps.blocks[bi].pendingRequests++
+				ps.blocks[bi].owners[peer] = &ownerMeta{
+					sentAt: time.Now(),
+				}
+
+				key := packKey(ps.index, bi)
+				if pk.peerBlockAssignments[peer] == nil {
+					pk.peerBlockAssignments[peer] = make(
+						map[uint64]struct{},
+					)
+				}
+				pk.peerBlockAssignments[peer][key] = struct{}{}
+				pk.peerInflightCount[peer]++
+				pk.nextBlock = bi + 1
+
+				requests = append(requests, &Request{
+					Peer:   peer,
+					Piece:  ps.index,
+					Begin:  begin,
+					Length: length,
+				})
+			}
+		}
+	}
+
+	return requests
+}
+
+func (pk *Picker) selectRandomFirstPiecesForDownload(
+	peer netip.AddrPort,
+	bf bitfield.Bitfield,
+	limit int,
+) []*Request {
+	eligiblePieces := make([]int, 0, pk.PieceCount)
+	for i := 0; i < pk.PieceCount; i++ {
+		ps := pk.pieces[i]
+		if ps.verified {
+			continue
+		}
+		if !bf.Has(i) {
+			continue
+		}
+		if pk.wanted != nil && !pk.wanted[i] {
+			continue
+		}
+
+		eligiblePieces = append(eligiblePieces, i)
+	}
+
+	pk.rng.Shuffle(len(eligiblePieces), func(i, j int) {
+		eligiblePieces[i], eligiblePieces[j] = eligiblePieces[j], eligiblePieces[i]
+	})
+
+	requests := make([]*Request, 0, limit)
+
+	for _, pieceIdx := range eligiblePieces {
+		if len(requests) >= limit {
+			break
+		}
+
+		ps := pk.pieces[pieceIdx]
+		for bi := 0; bi < ps.blockCount && len(requests) < limit; bi++ {
+			blk := ps.blocks[bi]
+			if blk.status != blockWant {
+				continue
+			}
+			if blk.pendingRequests >= pk.cfg.MaxRequestsPerBlocks {
+				continue
+			}
+			begin := bi * pk.BlockLength
+			length := pk.BlockLength
+			if bi == ps.blockCount-1 {
+				length = ps.lastBlock
+			}
+
+			ps.blocks[bi].status = blockInflight
+			ps.blocks[bi].pendingRequests++
+			ps.blocks[bi].owners[peer] = &ownerMeta{
+				sentAt: time.Now(),
+			}
+
+			key := packKey(ps.index, bi)
+			if pk.peerBlockAssignments[peer] == nil {
+				pk.peerBlockAssignments[peer] = make(
+					map[uint64]struct{},
+				)
+			}
+			pk.peerBlockAssignments[peer][key] = struct{}{}
+			pk.peerInflightCount[peer]++
+			pk.nextBlock = bi + 1
+
+			requests = append(requests, &Request{
+				Peer:   peer,
+				Piece:  ps.index,
+				Begin:  begin,
+				Length: length,
+			})
+
+		}
+	}
+
+	return requests
 }
