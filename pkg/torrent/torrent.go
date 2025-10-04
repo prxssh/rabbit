@@ -11,26 +11,45 @@ import (
 	"github.com/prxssh/rabbit/pkg/piece"
 	"github.com/prxssh/rabbit/pkg/storage"
 	"github.com/prxssh/rabbit/pkg/tracker"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
-	backoffStart            = 15 * time.Second
-	backoffMax              = 5 * time.Minute
+	// backoffStart is the initial retry delay when tracker announces fail.
+	backoffStart = 15 * time.Second
+
+	// backoffMax is the maximum retry delay for failed tracker announces.
+	backoffMax = 5 * time.Minute
+
+	// defaultAnnounceInterval is used when the tracker doesn't specify an
+	// interval.
 	defaultAnnounceInterval = 30 * time.Minute
 )
 
+// Torrent represents a single BitTorrent download session.
+//
+// It coordinates the tracker announce loop, peer management, and piece
+// selection for downloading a torrent. Call Run to start the download and Stop
+// to gracefully terminate it.
 type Torrent struct {
-	Size       int64
-	ClientID   [sha1.Size]byte
-	Uploaded   int64
-	Downloaded int64
-	Left       int64
+	// Size is the total byte size of the torrent content.
+	Size int64
 
-	Metainfo    *Metainfo
-	Tracker     *tracker.Tracker
+	// ClientID is this client's unique 20-byte peer ID.
+	ClientID [sha1.Size]byte
+
+	// Metainfo contains the parsed torrent metadata.
+	Metainfo *Metainfo
+
+	// Tracker handles communication with the torrent tracker.
+	Tracker *tracker.Tracker
+
+	// PeerManager coordinates all peer connections and downloads.
 	PeerManager *peer.Manager
 
-	wg sync.WaitGroup
+	// Internal lifecycle management
+	cancel   context.CancelFunc
+	stopOnce sync.Once
 }
 
 func New(data []byte) (*Torrent, error) {
@@ -73,6 +92,7 @@ func New(data []byte) (*Torrent, error) {
 		metainfo.Info.Hash,
 		len(metainfo.Info.Pieces),
 		metainfo.Info.PieceLength,
+		size,
 		picker,
 		storage,
 		nil,
@@ -83,30 +103,33 @@ func New(data []byte) (*Torrent, error) {
 		Metainfo:    metainfo,
 		Tracker:     tracker,
 		PeerManager: peerManager,
-		Uploaded:    0,
-		Downloaded:  1,
 		Size:        size,
-		Left:        size,
 	}, nil
 }
 
-func (t *Torrent) Start(ctx context.Context) error {
-	t.wg.Go(func() { t.startAnnounceLoop(ctx) })
-	t.wg.Go(func() { t.PeerManager.Start(ctx) })
-	t.wg.Wait()
+func (t *Torrent) Run(ctx context.Context) error {
+	ctx, t.cancel = context.WithCancel(ctx)
+	eg, ctx := errgroup.WithContext(ctx)
 
-	return nil
-}
+	eg.Go(func() error { return t.announceLoop(ctx) })
+	eg.Go(func() error { return t.PeerManager.Run(ctx) })
 
-func (t *Torrent) Stop(ctx context.Context) error {
-	_, err := t.Tracker.Announce(
-		ctx,
-		t.buildAnnounceParams(tracker.EventStopped),
-	)
+	err := eg.Wait()
+
+	t.sendStoppedEvent()
+
 	return err
 }
 
-func (t *Torrent) startAnnounceLoop(ctx context.Context) error {
+func (t *Torrent) Stop() {
+	t.stopOnce.Do(func() {
+		if t.cancel != nil {
+			t.cancel()
+		}
+	})
+}
+
+func (t *Torrent) announceLoop(ctx context.Context) error {
 	event := tracker.EventStarted
 	nextDelay := time.Duration(0)
 	backoff := backoffStart
@@ -137,8 +160,8 @@ func (t *Torrent) startAnnounceLoop(ctx context.Context) error {
 		}
 
 		t.PeerManager.AdmitPeers(resp.Peers)
-
 		backoff = backoffStart
+
 		interval := resp.Interval
 		if interval == 0 {
 			interval = defaultAnnounceInterval
@@ -152,16 +175,26 @@ func (t *Torrent) startAnnounceLoop(ctx context.Context) error {
 	}
 }
 
+func (t *Torrent) sendStoppedEvent() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	params := t.buildAnnounceParams(tracker.EventStopped)
+	_, _ = t.Tracker.Announce(ctx, params)
+}
+
 func (t *Torrent) buildAnnounceParams(
 	event tracker.Event,
 ) *tracker.AnnounceParams {
+	stats := t.PeerManager.Stats()
+
 	return &tracker.AnnounceParams{
 		InfoHash:   t.Metainfo.Info.Hash,
 		PeerID:     t.ClientID,
 		Port:       6969,
-		Uploaded:   uint64(t.Uploaded),
-		Downloaded: uint64(t.Downloaded),
-		Left:       uint64(t.Left),
+		Uploaded:   uint64(stats.TotalUploaded),
+		Downloaded: uint64(stats.TotalDownloaded),
+		Left:       uint64(t.Size - stats.TotalUploaded),
 		Event:      event,
 	}
 }

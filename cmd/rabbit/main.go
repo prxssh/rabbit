@@ -35,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	torrent.Start(context.Background())
+	torrent.Run(context.Background())
 }
 
 func setupLogger() {

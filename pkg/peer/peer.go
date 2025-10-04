@@ -321,10 +321,17 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			p.m.totalDownloaded += int64(len(data))
 			p.statsMut.Unlock()
 
-			off := int64(idx)*int64(p.m.pieceLength) + int64(begin)
-			p.m.storage.Submit(
-				storage.BlockWrite{Offset: off, Data: data},
-			)
+			blockIdx := int(begin) / piece.BlockLength
+			isLastPiece := int(idx) == p.m.picker.PieceCount-1
+
+			p.m.storage.AddBlock(data, storage.BlockMetadata{
+				PieceIdx:    int(idx),
+				BlockIdx:    blockIdx,
+				PieceLength: int(p.m.pieceLength),
+				BlockLength: piece.BlockLength,
+				IsLastPiece: isLastPiece,
+				TotalSize:   p.m.size,
+			})
 
 			pieceDone, _ := p.m.picker.OnBlockReceived(
 				p.addr,
@@ -337,18 +344,13 @@ func (p *Peer) readLoop(ctx context.Context) error {
 				continue
 			}
 
-			pieceExactLen := p.m.pieceLength
-			if int(idx) == p.m.picker.PieceCount-1 {
-				pieceExactLen = int64(p.m.picker.LastPieceLen)
-			}
-			ok, err := p.m.storage.VerifyPiece(
+			ok, err := p.m.storage.VerifyAndFlushPiece(
 				int(idx),
 				int(p.m.pieceLength),
-				int(pieceExactLen),
 				p.m.picker.PieceHash(int(idx)),
 			)
 			if err != nil {
-				l.Warn("verify piece failed", "err", err)
+				l.Warn("verify and flush failed", "error", err)
 				ok = false
 			}
 

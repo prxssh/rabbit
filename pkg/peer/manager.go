@@ -95,6 +95,9 @@ type Manager struct {
 	// last).
 	pieceLength int64
 
+	// size is the torrent size in bytes
+	size int64
+
 	// infoHash is the SHA-1 hash identifying this torrent.
 	infoHash [sha1.Size]byte
 
@@ -130,7 +133,8 @@ type Stats struct {
 func NewManager(
 	clientID, infoHash [sha1.Size]byte,
 	pieceCount int,
-	pieceLength int64,
+	pieceLength,
+	size int64,
 	picker *piece.Picker,
 	storage *storage.Disk,
 	cfg *Config,
@@ -152,6 +156,7 @@ func NewManager(
 		picker:      picker,
 		pieceLength: pieceLength,
 		storage:     storage,
+		size:        size,
 		dialSem:     make(chan struct{}, c.MaxPeers>>1),
 		peers:       make(map[netip.AddrPort]*Peer),
 		peerCh:      make(chan netip.AddrPort, c.MaxPeers),
