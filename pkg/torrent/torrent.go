@@ -52,7 +52,7 @@ type Torrent struct {
 	stopOnce sync.Once
 }
 
-func NewTorrent(data []byte) (*Torrent, error) {
+func NewTorrent(data []byte, downloadDir string) (*Torrent, error) {
 	clientID, err := generatePeerID()
 	if err != nil {
 		return nil, err
@@ -72,8 +72,16 @@ func NewTorrent(data []byte) (*Torrent, error) {
 		return nil, err
 	}
 
+	// Use default directory if not provided
+	if downloadDir == "" {
+		downloadDir = "./data/torrents"
+	}
+
+	// Build full path: downloadDir/torrentName
+	downloadPath := downloadDir + "/" + metainfo.Info.Name
+
 	storage, err := storage.OpenSingleFile(
-		"./data/torrents/download.torrent",
+		downloadPath,
 		size,
 	)
 	if err != nil {
@@ -226,6 +234,7 @@ func (t *Torrent) buildAnnounceParams(
 		Downloaded: uint64(stats.TotalDownloaded),
 		Left:       uint64(t.Size - stats.TotalUploaded),
 		Event:      event,
+		NumWant:    100,
 	}
 }
 

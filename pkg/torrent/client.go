@@ -5,6 +5,8 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"sync"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type Client struct {
@@ -21,8 +23,8 @@ func (c *Client) Startup(ctx context.Context) {
 	c.ctx = ctx
 }
 
-func (c *Client) AddTorrent(data []byte) (*Torrent, error) {
-	torrent, err := NewTorrent(data)
+func (c *Client) AddTorrent(data []byte, downloadDir string) (*Torrent, error) {
+	torrent, err := NewTorrent(data, downloadDir)
 	if err != nil {
 		return nil, err
 	}
@@ -77,4 +79,19 @@ func (c *Client) GetTorrentStats(infoHashHex string) *Stats {
 	}
 
 	return torrent.GetStats()
+}
+
+// SelectDownloadDirectory shows a directory picker dialog and returns the
+// selected path
+func (c *Client) SelectDownloadDirectory() (string, error) {
+	path, err := runtime.OpenDirectoryDialog(
+		c.ctx,
+		runtime.OpenDialogOptions{
+			Title: "Select Download Directory",
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
 }

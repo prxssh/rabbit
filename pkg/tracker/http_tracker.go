@@ -137,9 +137,7 @@ func (ht *HTTPTracker) buildAnnounceURL(params *AnnounceParams) string {
 	q.Set("uploaded", strconv.FormatUint(params.Uploaded, 10))
 	q.Set("downloaded", strconv.FormatUint(params.Downloaded, 10))
 	q.Set("left", strconv.FormatUint(params.Left, 10))
-	// FIXME (@prxssh): fetching compact peers only returns a single peer
-	// not sure why. Will fix this later
-	// q.Set("compact", "1")
+	q.Set("compact", "1")
 
 	if params.NumWant > 0 {
 		q.Set("numwant", strconv.Itoa(int(params.NumWant)))

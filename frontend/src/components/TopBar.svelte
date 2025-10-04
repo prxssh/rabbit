@@ -3,6 +3,7 @@
   export let downloadSpeed: string = '0 KB/s'
   export let uploadSpeed: string = '0 KB/s'
   export let onAddTorrent: () => void
+  export let onSettings: () => void
 </script>
 
 <div class="topbar">
@@ -16,8 +17,11 @@
       <span class="stat-item">↑ {uploadSpeed}</span>
       <span class="stat-item">{torrentCount} torrents</span>
     </div>
-    <button class="topbar-add-button" on:click={onAddTorrent}>
-      + Add Torrent
+    <button class="icon-button add-button" on:click={onAddTorrent} title="Add Torrent">
+      +
+    </button>
+    <button class="icon-button" on:click={onSettings} title="Settings">
+      ⚙
     </button>
   </div>
 </div>
@@ -69,21 +73,29 @@
     color: var(--color-text-secondary);
   }
 
-  .topbar-add-button {
-    background-color: var(--color-bg-tertiary);
-    border: 1px solid var(--color-border-active);
-    color: var(--color-text-primary);
-    padding: var(--spacing-2) var(--spacing-5);
-    font-family: var(--font-family-base);
-    font-size: var(--font-size-base);
+  .icon-button {
+    background: none;
+    border: none;
+    color: var(--color-text-secondary);
+    font-size: 20px;
     cursor: pointer;
+    padding: var(--spacing-2);
     border-radius: var(--radius-base);
     transition: all var(--transition-base);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
   }
 
-  .topbar-add-button:hover {
-    background-color: var(--color-bg-elevated);
-    border-color: var(--color-border-hover);
+  .icon-button:hover {
+    background-color: var(--color-bg-hover);
     color: var(--color-text-primary);
+  }
+
+  .icon-button.add-button {
+    font-size: 24px;
+    font-weight: 300;
   }
 </style>

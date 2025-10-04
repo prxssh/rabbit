@@ -231,17 +231,27 @@ func (m *Manager) BroadcastHave(pieceIdx int, excludePeer netip.AddrPort) {
 			continue
 		}
 
-		select {
-		case peer.outq <- MessageHave(pieceIdx):
-			count++
+		// Use recover to handle closed channels gracefully
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Channel was closed, peer is
+					// disconnecting
+				}
+			}()
 
-		default:
-			m.log.Warn(
-				"failed to broadcast HAVE, queue full",
-				slog.String("peer", addr.String()),
-				slog.Int("piece", pieceIdx),
-			)
-		}
+			select {
+			case peer.outq <- MessageHave(pieceIdx):
+				count++
+
+			default:
+				m.log.Warn(
+					"failed to broadcast HAVE, queue full",
+					slog.String("peer", addr.String()),
+					slog.Int("piece", pieceIdx),
+				)
+			}
+		}()
 	}
 }
 
@@ -280,6 +290,14 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 
 				peer, err := dialPeer(dctx, m, addr)
 				if err != nil {
+					m.log.Debug(
+						"dial failed",
+						slog.String(
+							"addr",
+							addr.String(),
+						),
+						slog.String("err", err.Error()),
+					)
 					return
 				}
 
@@ -291,6 +309,7 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 
 				m.peerAdd(addr, peer)
 				peer.run(ctx)
+				m.removePeer(addr)
 			}(addr)
 		}
 	}

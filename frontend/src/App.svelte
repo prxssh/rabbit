@@ -7,6 +7,8 @@
   import TorrentItem from './components/TorrentItem.svelte'
   import EmptyState from './components/EmptyState.svelte'
   import DetailPanel from './components/DetailPanel.svelte'
+  import AddTorrentDialog from './components/AddTorrentDialog.svelte'
+  import SettingsDialog from './components/SettingsDialog.svelte'
 
   let fileInput: HTMLInputElement
   let isDragging = false
@@ -17,6 +19,28 @@
   let peers: peer.PeerStats[] = []
   let pieceStates: number[] = []
   let statsUpdateInterval: number | null = null
+  let showAddDialog = false
+  let showSettingsDialog = false
+  let pendingFile: File | null = null
+  let defaultDownloadPath = ''
+
+  // Load default download path from localStorage
+  if (typeof window !== 'undefined') {
+    defaultDownloadPath = localStorage.getItem('defaultDownloadPath') || ''
+  }
+
+  function openSettings() {
+    showSettingsDialog = true
+  }
+
+  function saveSettings(path: string) {
+    defaultDownloadPath = path
+    if (path) {
+      localStorage.setItem('defaultDownloadPath', path)
+    } else {
+      localStorage.removeItem('defaultDownloadPath')
+    }
+  }
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault()
@@ -36,8 +60,13 @@
     if (files && files.length > 0) {
       const file = files[0]
       if (file.name.endsWith('.torrent')) {
-        selectedFile = file
-        await uploadTorrent(file)
+        // If default path exists, use it directly
+        if (defaultDownloadPath) {
+          await uploadTorrent(file, defaultDownloadPath)
+        } else {
+          pendingFile = file
+          showAddDialog = true
+        }
       } else {
         uploadStatus = 'Error: Please select a .torrent file'
       }
@@ -50,12 +79,19 @@
     if (files && files.length > 0) {
       const file = files[0]
       if (file.name.endsWith('.torrent')) {
-        selectedFile = file
-        uploadTorrent(file)
+        // If default path exists, use it directly
+        if (defaultDownloadPath) {
+          uploadTorrent(file, defaultDownloadPath)
+        } else {
+          pendingFile = file
+          showAddDialog = true
+        }
       } else {
         uploadStatus = 'Error: Please select a .torrent file'
       }
     }
+    // Reset input so the same file can be selected again
+    target.value = ''
   }
 
   function formatHash(hash: number[]): string {
@@ -105,13 +141,13 @@
     torrents = updatedTorrents
   }
 
-  async function uploadTorrent(file: File) {
+  async function uploadTorrent(file: File, downloadPath: string) {
     try {
       uploadStatus = `Uploading ${file.name}...`
       const arrayBuffer = await file.arrayBuffer()
       const bytes = new Uint8Array(arrayBuffer)
 
-      const result: torrent.Torrent = await AddTorrent(Array.from(bytes))
+      const result: torrent.Torrent = await AddTorrent(Array.from(bytes), downloadPath)
       uploadStatus = `Success: ${file.name} added`
       selectedFile = null
 
@@ -130,6 +166,25 @@
     } catch (error) {
       uploadStatus = `Error: ${error}`
     }
+  }
+
+  function handleAddDialogConfirm(downloadPath: string, remember: boolean) {
+    if (pendingFile) {
+      uploadTorrent(pendingFile, downloadPath)
+      pendingFile = null
+
+      // Save to localStorage if user checked "Remember this location"
+      if (remember) {
+        defaultDownloadPath = downloadPath
+        localStorage.setItem('defaultDownloadPath', downloadPath)
+      }
+    }
+    showAddDialog = false
+  }
+
+  function handleAddDialogCancel() {
+    pendingFile = null
+    showAddDialog = false
   }
 
   async function removeTorrent(id: number) {
@@ -202,6 +257,7 @@
   <TopBar
     torrentCount={torrents.length}
     onAddTorrent={openFileDialog}
+    onSettings={openSettings}
   />
 
   <div class="content">
@@ -248,6 +304,21 @@
     bind:this={fileInput}
     on:change={handleFileSelect}
     style="display: none"
+  />
+
+  <AddTorrentDialog
+    show={showAddDialog}
+    selectedFile={pendingFile}
+    defaultPath={defaultDownloadPath}
+    onConfirm={handleAddDialogConfirm}
+    onCancel={handleAddDialogCancel}
+  />
+
+  <SettingsDialog
+    show={showSettingsDialog}
+    defaultPath={defaultDownloadPath}
+    onSave={saveSettings}
+    onClose={() => showSettingsDialog = false}
   />
 </main>
 

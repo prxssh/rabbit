@@ -136,8 +136,9 @@ func (p *Peer) Stats() PeerStats {
 	connectedFor := time.Since(p.connectedAt)
 
 	var downloadRate int64
-	if connectedFor > 0 {
-		downloadRate = p.downloadedBytes / int64(connectedFor.Seconds())
+	seconds := int64(connectedFor.Seconds())
+	if seconds > 0 {
+		downloadRate = p.downloadedBytes / seconds
 	}
 
 	return PeerStats{
@@ -196,7 +197,6 @@ func (p *Peer) cleanup() error {
 // the context is cancelled or an error occurs.
 func (p *Peer) readLoop(ctx context.Context) error {
 	l := p.log.With("src", "read.loop")
-	l.Info("start read loop")
 
 	lastRecv := time.Now()
 
@@ -235,7 +235,6 @@ func (p *Peer) readLoop(ctx context.Context) error {
 		}
 
 		if msg == nil { // keep-alive
-			l.Debug("received keep-alive")
 			lastRecv = time.Now()
 			continue
 		}
@@ -248,46 +247,19 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 		switch msg.ID {
 		case MsgChoke:
-			l.Debug(
-				"message",
-				slog.String("message", MsgChoke.String()),
-			)
 			p.peerChoking = true
 
 		case MsgUnchoke:
-			l.Debug(
-				"message",
-				slog.String("message", MsgUnchoke.String()),
-			)
-
 			p.peerChoking = false
 			p.requestNextPiece()
 
 		case MsgInterested:
-			l.Debug(
-				"message",
-				slog.String("message", MsgInterested.String()),
-			)
-
 			p.peerInterested = true
 
 		case MsgNotInterested:
-			l.Debug(
-				"message",
-				slog.String(
-					"message",
-					MsgNotInterested.String(),
-				),
-			)
-
 			p.peerInterested = false
 
 		case MsgBitfield:
-			l.Debug(
-				"message",
-				slog.String("message", MsgBitfield.String()),
-			)
-
 			p.bf = bitfield.FromBytes(msg.Payload)
 			p.m.picker.OnPeerBitfield(p.addr, p.bf)
 
@@ -301,12 +273,6 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			if !ok {
 				continue
 			}
-
-			l.Debug(
-				"message",
-				slog.String("message", MsgHave.String()),
-				slog.Uint64("piece_index", uint64(pieceIdx)),
-			)
 
 			p.bf.Set(int(pieceIdx))
 			p.m.picker.OnPeerHave(p.addr, int(pieceIdx))
@@ -324,13 +290,6 @@ func (p *Peer) readLoop(ctx context.Context) error {
 				p.statsMut.Unlock()
 				continue
 			}
-
-			l.Debug(
-				"message",
-				slog.String("message", MsgPiece.String()),
-				slog.Uint64("index", uint64(idx)),
-				slog.Uint64("begin", uint64(begin)),
-			)
 
 			p.statsMut.Lock()
 			p.blocksReceived++
@@ -383,11 +342,12 @@ func (p *Peer) readLoop(ctx context.Context) error {
 				slog.Int("piece", int(idx)),
 			)
 
+			// Request next piece after completing current one
+			p.requestNextPiece()
+
 		case MsgRequest:
-			l.Debug(
-				"message",
-				slog.String("message", MsgRequest.String()),
-			)
+			// Peer is requesting a piece from us (not implemented
+			// yet)
 
 		default:
 			l.Warn(
@@ -403,7 +363,6 @@ func (p *Peer) readLoop(ctx context.Context) error {
 // until the context is cancelled or an error occurs.
 func (p *Peer) writeLoop(ctx context.Context) error {
 	l := p.log.With("src", "write.loop")
-	l.Info("start write loop")
 
 	lastKeepAliveAt := time.Now().Add(-p.m.cfg.PeerHeartbeatInterval)
 	keepAliveTicker := time.NewTicker(p.m.cfg.KeepAliveInterval)
@@ -433,8 +392,6 @@ func (p *Peer) writeLoop(ctx context.Context) error {
 				return err
 			}
 
-			l.Debug("msg sent", slog.Any("message", msg))
-
 		case <-keepAliveTicker.C:
 			if time.Since(
 				lastKeepAliveAt,
@@ -450,7 +407,6 @@ func (p *Peer) writeLoop(ctx context.Context) error {
 			}
 
 			lastKeepAliveAt = time.Now()
-			l.Debug("peer keepalive sent")
 		}
 	}
 }
