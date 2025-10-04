@@ -411,6 +411,34 @@ func (pk *Picker) OnPeerHave(peer netip.AddrPort, pieceIdx int) {
 	pk.updatePieceAvailability(pieceIdx, 1)
 }
 
+// PieceState represents the download state of a piece
+type PieceState int
+
+const (
+	PieceStateNotStarted PieceState = 0
+	PieceStateInProgress PieceState = 1
+	PieceStateCompleted  PieceState = 2
+)
+
+// PieceStates returns a slice of piece states indicating the download status.
+// The slice index corresponds to the piece index.
+func (pk *Picker) PieceStates() []PieceState {
+	pk.mut.RLock()
+	defer pk.mut.RUnlock()
+
+	states := make([]PieceState, pk.PieceCount)
+	for i, p := range pk.pieces {
+		if p.verified {
+			states[i] = PieceStateCompleted
+		} else if p.doneBlocks > 0 {
+			states[i] = PieceStateInProgress
+		} else {
+			states[i] = PieceStateNotStarted
+		}
+	}
+	return states
+}
+
 func (pk *Picker) updatePieceAvailability(idx, val int) {
 	oldAvail := pk.pieces[idx].availability
 	newAvail := oldAvail + val

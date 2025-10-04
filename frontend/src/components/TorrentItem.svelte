@@ -1,6 +1,7 @@
 <script lang="ts">
   import type {torrent} from '../../wailsjs/go/models'
   import ProgressBar from './ProgressBar.svelte'
+  import { formatBytes } from '../lib/utils'
 
   export let id: number
   export let torrentData: torrent.Torrent | undefined
@@ -11,14 +12,6 @@
   export let selected: boolean = false
   export let onSelect: () => void
   export let onRemove: () => void
-
-  function formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B'
-    const k = 1024
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i]
-  }
 </script>
 
 <div class="torrent-item" class:selected on:click={onSelect}>
@@ -43,20 +36,19 @@
   .torrent-item {
     background-color: var(--color-bg-secondary);
     border: 1px solid var(--color-border-primary);
-    padding: var(--spacing-4) var(--spacing-5);
-    margin-bottom: var(--spacing-2);
     border-radius: var(--radius-base);
+    margin-bottom: var(--spacing-2);
+    padding: var(--spacing-4) var(--spacing-5);
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: var(--spacing-4);
-    transition: all var(--transition-base);
     cursor: pointer;
+    transition: all var(--transition-base);
   }
 
   .torrent-item:hover {
     background-color: var(--color-bg-hover);
-    border-color: var(--color-border-secondary);
   }
 
   .torrent-item.selected {

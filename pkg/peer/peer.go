@@ -152,7 +152,7 @@ func (p *Peer) Stats() PeerStats {
 		ConnectedFor:   connectedFor,
 		DownloadRate:   downloadRate,
 		IsChoked:       p.peerChoking,
-		IsInterested:   p.amInterested,
+		IsInterested:   p.peerInterested,
 	}
 }
 

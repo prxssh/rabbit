@@ -168,6 +168,7 @@ export namespace torrent {
 	    uploadRate: number;
 	    progress: number;
 	    peers: peer.PeerStats[];
+	    pieceStates: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Stats(source);
@@ -181,6 +182,7 @@ export namespace torrent {
 	        this.uploadRate = source["uploadRate"];
 	        this.progress = source["progress"];
 	        this.peers = this.convertValues(source["peers"], peer.PeerStats);
+	        this.pieceStates = source["pieceStates"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

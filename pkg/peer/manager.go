@@ -128,6 +128,7 @@ type Stats struct {
 	TotalUploaded   int64       `json:"uploaded"`
 	DownloadRate    int64       `json:"downloadRate"`
 	UploadRate      int64       `json:"uploadRate"`
+	PieceStates     []int       `json:"pieceStates"`
 }
 
 func NewManager(
@@ -188,12 +189,20 @@ func (m *Manager) Stats() Stats {
 		peerStats = append(peerStats, peer.Stats())
 	}
 
+	// Convert PieceState to int for JSON serialization
+	pieceStates := m.picker.PieceStates()
+	intStates := make([]int, len(pieceStates))
+	for i, state := range pieceStates {
+		intStates[i] = int(state)
+	}
+
 	return Stats{
 		Peers:           peerStats,
 		TotalDownloaded: m.totalDownloaded,
 		TotalUploaded:   m.totalUploaded,
 		DownloadRate:    m.downloadRate,
 		UploadRate:      m.uploadRate,
+		PieceStates:     intStates,
 	}
 }
 

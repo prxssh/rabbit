@@ -1,62 +1,55 @@
 <script lang="ts">
   import type {peer} from '../../wailsjs/go/models'
+  import Badge from './ui/Badge.svelte'
+  import { formatBytes, formatBytesPerSec, formatDuration } from '../lib/utils'
 
   export let peers: peer.PeerStats[]
 
-  function formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B'
-    const k = 1024
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i]
-  }
-
-  function formatBytesPerSec(bytes: number): string {
-    return formatBytes(bytes) + '/s'
-  }
+  // Sort peers by connection time (descending - longest connected first)
+  $: sortedPeers = [...peers].sort((a, b) => b.ConnectedFor - a.ConnectedFor)
 </script>
 
 {#if peers.length === 0}
   <div class="peers-empty">No connected peers</div>
 {:else}
-  <div class="peers-list">
-    {#each peers as peer}
-      <div class="peer-item">
-        <div class="peer-header">
-          <span class="peer-addr">{peer.Addr}</span>
-          <div class="peer-status">
-            {#if peer.IsChoked}
-              <span class="peer-badge choked">Choked</span>
-            {/if}
-            {#if peer.IsInterested}
-              <span class="peer-badge interested">Interested</span>
-            {/if}
-          </div>
-        </div>
-        <div class="peer-stats">
-          <div class="peer-stat">
-            <span class="peer-stat-label">↓ Downloaded</span>
-            <span class="peer-stat-value">{formatBytes(peer.Downloaded)}</span>
-          </div>
-          <div class="peer-stat">
-            <span class="peer-stat-label">↑ Uploaded</span>
-            <span class="peer-stat-value">{formatBytes(peer.Uploaded)}</span>
-          </div>
-          <div class="peer-stat">
-            <span class="peer-stat-label">↓ Rate</span>
-            <span class="peer-stat-value">{formatBytesPerSec(peer.DownloadRate)}</span>
-          </div>
-          <div class="peer-stat">
-            <span class="peer-stat-label">Connected</span>
-            <span class="peer-stat-value">{Math.floor(peer.ConnectedFor / 1e9)}s</span>
-          </div>
-          <div class="peer-stat">
-            <span class="peer-stat-label">Blocks</span>
-            <span class="peer-stat-value">{peer.BlocksReceived} / {peer.BlocksFailed} failed</span>
-          </div>
-        </div>
-      </div>
-    {/each}
+  <div class="table-wrapper">
+    <table class="peers-table">
+      <thead>
+        <tr>
+          <th>Address</th>
+          <th>Status</th>
+          <th>Downloaded</th>
+          <th>Uploaded</th>
+          <th>Rate</th>
+          <th>Connected</th>
+          <th>Blocks</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each sortedPeers as peer}
+          <tr>
+            <td class="peer-addr">{peer.Addr}</td>
+            <td class="peer-status">
+              <div class="status-badges">
+                {#if peer.IsChoked}
+                  <Badge variant="error" text="Choked" />
+                {:else}
+                  <Badge variant="success" text="Unchoked" />
+                {/if}
+                {#if peer.IsInterested}
+                  <Badge variant="success" text="Interested" />
+                {/if}
+              </div>
+            </td>
+            <td>{formatBytes(peer.Downloaded)}</td>
+            <td>{formatBytes(peer.Uploaded)}</td>
+            <td>{formatBytesPerSec(peer.DownloadRate)}</td>
+            <td>{formatDuration(peer.ConnectedFor)}</td>
+            <td>{peer.BlocksReceived} / {peer.BlocksFailed} failed</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   </div>
 {/if}
 
@@ -68,80 +61,57 @@
     font-size: var(--font-size-base);
   }
 
-  .peers-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-3);
+  .table-wrapper {
+    overflow-x: auto;
   }
 
-  .peer-item {
+  .peers-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+  }
+
+  .peers-table thead {
     background-color: var(--color-bg-primary);
-    border: 1px solid var(--color-border-primary);
-    border-radius: var(--radius-base);
-    padding: 14px var(--spacing-4);
+    border-bottom: 1px solid var(--color-border-primary);
   }
 
-  .peer-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--spacing-3);
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--color-bg-hover);
-  }
-
-  .peer-addr {
-    font-size: var(--font-size-base);
-    color: var(--color-text-secondary);
-    font-family: var(--font-family-mono);
-  }
-
-  .peer-status {
-    display: flex;
-    gap: 6px;
-  }
-
-  .peer-badge {
-    font-size: var(--font-size-xs);
-    padding: 3px var(--spacing-2);
-    border-radius: var(--radius-sm);
-    text-transform: uppercase;
-    letter-spacing: var(--letter-spacing-wide);
-  }
-
-  .peer-badge.choked {
-    background-color: var(--color-error-bg);
-    color: var(--color-error);
-    border: 1px solid var(--color-error-border);
-  }
-
-  .peer-badge.interested {
-    background-color: var(--color-success-bg);
-    color: var(--color-success);
-    border: 1px solid var(--color-success-border);
-  }
-
-  .peer-stats {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-  }
-
-  .peer-stat {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-1);
-  }
-
-  .peer-stat-label {
+  .peers-table th {
+    padding: var(--spacing-3) var(--spacing-4);
+    text-align: left;
     font-size: var(--font-size-xs);
     color: var(--color-text-disabled);
     text-transform: uppercase;
     letter-spacing: var(--letter-spacing-wide);
+    font-weight: var(--font-weight-semibold);
   }
 
-  .peer-stat-value {
-    font-size: var(--font-size-sm);
+  .peers-table tbody tr {
+    border-bottom: 1px solid var(--color-border-primary);
+    transition: background-color 0.15s ease;
+  }
+
+  .peers-table tbody tr:hover {
+    background-color: var(--color-bg-hover);
+  }
+
+  .peers-table tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  .peers-table td {
+    padding: var(--spacing-3) var(--spacing-4);
     color: var(--color-text-tertiary);
+  }
+
+  .peer-addr {
+    font-family: var(--font-family-mono);
+    color: var(--color-text-secondary);
+  }
+
+  .status-badges {
+    display: flex;
+    gap: var(--spacing-2);
+    flex-wrap: wrap;
   }
 </style>

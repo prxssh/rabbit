@@ -137,6 +137,7 @@ type Stats struct {
 	UploadRate   int64            `json:"uploadRate"`
 	Progress     float64          `json:"progress"`
 	Peers        []peer.PeerStats `json:"peers"`
+	PieceStates  []int            `json:"pieceStates"`
 }
 
 func (t *Torrent) GetStats() *Stats {
@@ -154,6 +155,7 @@ func (t *Torrent) GetStats() *Stats {
 		DownloadRate: stats.DownloadRate,
 		UploadRate:   stats.UploadRate,
 		Peers:        stats.Peers,
+		PieceStates:  stats.PieceStates,
 	}
 }
 

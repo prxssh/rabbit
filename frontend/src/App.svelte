@@ -15,8 +15,8 @@
   let torrents: any[] = []
   let selectedTorrentId: number | null = null
   let peers: peer.PeerStats[] = []
+  let pieceStates: number[] = []
   let statsUpdateInterval: number | null = null
-  let activeTab: 'details' | 'peers' = 'details'
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault()
@@ -75,27 +75,34 @@
   }
 
   async function updateAllTorrentsStats() {
-    for (const torrent of torrents) {
-      if (torrent.torrentData?.metainfo?.info?.hash) {
-        const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
-        try {
-          const stats = await GetTorrentStats(infoHash)
-          if (stats) {
-            torrent.progress = stats.progress
-            torrent.downloadSpeed = formatBytesPerSec(stats.downloadRate)
-            torrent.uploadSpeed = formatBytesPerSec(stats.uploadRate)
+    const updatedTorrents = await Promise.all(
+      torrents.map(async (torrent) => {
+        if (torrent.torrentData?.metainfo?.info?.hash) {
+          const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
+          try {
+            const stats = await GetTorrentStats(infoHash)
+            if (stats) {
+              // Update peers and piece states if this is the selected torrent
+              if (selectedTorrentId === torrent.id) {
+                peers = stats.peers || []
+                pieceStates = stats.pieceStates || []
+              }
 
-            // Update peers if this is the selected torrent
-            if (selectedTorrentId === torrent.id) {
-              peers = stats.peers || []
+              return {
+                ...torrent,
+                progress: stats.progress,
+                downloadSpeed: formatBytesPerSec(stats.downloadRate),
+                uploadSpeed: formatBytesPerSec(stats.uploadRate)
+              }
             }
+          } catch (error) {
+            console.error('Failed to load stats:', error)
           }
-        } catch (error) {
-          console.error('Failed to load stats:', error)
         }
-      }
-    }
-    torrents = torrents // trigger reactivity
+        return torrent
+      })
+    )
+    torrents = updatedTorrents
   }
 
   async function uploadTorrent(file: File) {
@@ -147,7 +154,12 @@
 
   function selectTorrent(id: number) {
     selectedTorrentId = selectedTorrentId === id ? null : id
-    activeTab = 'details'
+    if (selectedTorrentId) {
+      const torrent = torrents.find(t => t.id === selectedTorrentId)
+      if (torrent) {
+        pieceStates = new Array(torrent.torrentData.metainfo.info.pieces.length).fill(0)
+      }
+    }
   }
 
   function openFileDialog() {
@@ -156,9 +168,10 @@
 
   $: selectedTorrent = torrents.find(t => t.id === selectedTorrentId)
 
-  // Clear peers when selection changes to null
+  // Clear peers and piece states when selection changes to null
   $: if (!selectedTorrent) {
     peers = []
+    pieceStates = []
   }
 
   // Start stats update interval when we have torrents
@@ -192,35 +205,35 @@
   />
 
   <div class="content">
-    <div class="content-layout">
-      <div class="torrent-list">
-        {#if torrents.length === 0}
-          <EmptyState onAddTorrent={openFileDialog} />
-        {:else}
-          {#each torrents as torrent (torrent.id)}
-            <TorrentItem
-              id={torrent.id}
-              torrentData={torrent.torrentData}
-              fileName={torrent.fileName}
-              progress={torrent.progress}
-              downloadSpeed={torrent.downloadSpeed}
-              uploadSpeed={torrent.uploadSpeed}
-              selected={selectedTorrentId === torrent.id}
-              onSelect={() => selectTorrent(torrent.id)}
-              onRemove={() => removeTorrent(torrent.id)}
-            />
-          {/each}
-        {/if}
-      </div>
+    <div class="torrent-list">
+      {#if torrents.length === 0}
+        <EmptyState onAddTorrent={openFileDialog} />
+      {:else}
+        {#each torrents as torrent (torrent.id)}
+          <TorrentItem
+            id={torrent.id}
+            torrentData={torrent.torrentData}
+            fileName={torrent.fileName}
+            progress={torrent.progress}
+            downloadSpeed={torrent.downloadSpeed}
+            uploadSpeed={torrent.uploadSpeed}
+            selected={selectedTorrentId === torrent.id}
+            onSelect={() => selectTorrent(torrent.id)}
+            onRemove={() => removeTorrent(torrent.id)}
+          />
+        {/each}
+      {/if}
+    </div>
 
-      {#if selectedTorrent}
+    {#if selectedTorrent}
+      <div class="detail-panel-container">
         <DetailPanel
           torrentData={selectedTorrent.torrentData}
           {peers}
-          bind:activeTab
+          {pieceStates}
         />
-      {/if}
-    </div>
+      </div>
+    {/if}
   </div>
 
   <StatusBar
@@ -265,18 +278,21 @@
   .content {
     flex: 1;
     overflow: hidden;
-    padding: var(--spacing-6);
-  }
-
-  .content-layout {
     display: flex;
-    gap: var(--spacing-6);
-    height: 100%;
+    flex-direction: column;
+    padding: var(--spacing-6);
+    gap: var(--spacing-4);
   }
 
   .torrent-list {
     flex: 1;
     overflow-y: auto;
-    min-width: 0;
+    min-height: 0;
+  }
+
+  .detail-panel-container {
+    height: 50%;
+    min-height: 300px;
+    overflow: hidden;
   }
 </style>
