@@ -52,7 +52,7 @@ type Torrent struct {
 	stopOnce sync.Once
 }
 
-func New(data []byte) (*Torrent, error) {
+func NewTorrent(data []byte) (*Torrent, error) {
 	clientID, err := generatePeerID()
 	if err != nil {
 		return nil, err

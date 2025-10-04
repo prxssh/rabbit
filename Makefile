@@ -4,12 +4,12 @@ BUILD_DIR := build
 
 .PHONY: clean format test
 
-docker-build: 
+docker-build:
 	mkdir -p ${BUILD_DIR}
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ${BUILD_DIR}/${BINARY} ${SRC_DIR}/main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ${BUILD_DIR}/${BINARY} .
 
-run: 
-	go run ${SRC_DIR}/main.go
+run:
+	wails dev
 
 clean: 
 	go clean 
