@@ -11,29 +11,29 @@ import (
 )
 
 type Metainfo struct {
-	Info         *Info
-	Announce     string
-	AnnounceList [][]string
-	CreationDate time.Time
-	CreatedBy    string
-	Comment      string
-	Encoding     string
-	URLs         []string
+	Info         *Info      `json:"info"`
+	Announce     string     `json:"announce"`
+	AnnounceList [][]string `json:"announceList"`
+	CreationDate time.Time  `json:"creationDate"`
+	CreatedBy    string     `json:"createdBy"`
+	Comment      string     `json:"comment"`
+	Encoding     string     `json:"encoding"`
+	URLs         []string   `json:"urls"`
 }
 
 type Info struct {
-	Hash        [sha1.Size]byte
-	Name        string
-	PieceLength int64
-	Pieces      [][sha1.Size]byte
-	Private     bool
-	Length      int64
-	Files       []*File
+	Hash        [sha1.Size]byte   `json:"hash"`
+	Name        string            `json:"name"`
+	PieceLength int64             `json:"pieceLength"`
+	Pieces      [][sha1.Size]byte `json:"pieces"`
+	Private     bool              `json:"private"`
+	Length      int64             `json:"length"`
+	Files       []*File           `json:"files"`
 }
 
 type File struct {
-	Length int64
-	Path   []string
+	Length int64    `json:"length"`
+	Path   []string `json:"path"`
 }
 
 func (m *Metainfo) Size() int64 {

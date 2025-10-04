@@ -123,11 +123,11 @@ type Manager struct {
 }
 
 type Stats struct {
-	ActivePeers     int
-	TotalDownloaded int64
-	TotalUploaded   int64
-	DownloadRate    int64
-	UploadRate      int64
+	Peers           []PeerStats `json:"peers"`
+	TotalDownloaded int64       `json:"downloaded"`
+	TotalUploaded   int64       `json:"uploaded"`
+	DownloadRate    int64       `json:"downloadRate"`
+	UploadRate      int64       `json:"uploadRate"`
 }
 
 func NewManager(
@@ -183,36 +183,18 @@ func (m *Manager) Stats() Stats {
 	m.statsMut.RLock()
 	defer m.statsMut.RUnlock()
 
+	peerStats := make([]PeerStats, 0, len(m.peers))
+	for _, peer := range m.peers {
+		peerStats = append(peerStats, peer.Stats())
+	}
+
 	return Stats{
-		ActivePeers:     m.peerCount(),
+		Peers:           peerStats,
 		TotalDownloaded: m.totalDownloaded,
 		TotalUploaded:   m.totalUploaded,
 		DownloadRate:    m.downloadRate,
 		UploadRate:      m.uploadRate,
 	}
-}
-
-func (m *Manager) GetAllPeersStats() []PeerStats {
-	stats := make([]PeerStats, 0, len(m.peers))
-
-	m.peerMut.Lock()
-	defer m.peerMut.Unlock()
-
-	for _, peer := range m.peers {
-		stats = append(stats, peer.Stats())
-	}
-	return stats
-}
-
-func (m *Manager) GetPeerStats(addr netip.AddrPort) (PeerStats, bool) {
-	m.peerMut.Lock()
-	peer, ok := m.peers[addr]
-	m.peerMut.Unlock()
-
-	if !ok {
-		return PeerStats{}, false
-	}
-	return peer.Stats(), true
 }
 
 func (m *Manager) AdmitPeers(peers []netip.AddrPort) {

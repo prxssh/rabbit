@@ -25,12 +25,11 @@ func main() {
 		Title:            "Rabbit - BitTorrent Client & Search Engine",
 		Width:            1024,
 		Height:           768,
+		Fullscreen:       true,
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup:        func(ctx context.Context) { client.Startup(ctx) },
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		Bind: []interface{}{
-			client,
-		},
+		Bind:             []any{client},
 	})
 	if err != nil {
 		slog.Error("failed to start wails", "error", err)

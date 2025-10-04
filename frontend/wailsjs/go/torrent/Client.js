@@ -6,6 +6,10 @@ export function AddTorrent(arg1) {
   return window['go']['torrent']['Client']['AddTorrent'](arg1);
 }
 
+export function GetTorrentStats(arg1) {
+  return window['go']['torrent']['Client']['GetTorrentStats'](arg1);
+}
+
 export function RemoveTorrent(arg1) {
   return window['go']['torrent']['Client']['RemoveTorrent'](arg1);
 }

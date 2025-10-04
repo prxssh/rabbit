@@ -1,80 +1,282 @@
 <script lang="ts">
-  import logo from './assets/images/logo-universal.png'
-  import {AddTorrent} from '../wailsjs/go/torrent/Client.js'
+  import {AddTorrent, GetTorrentStats, RemoveTorrent} from '../wailsjs/go/torrent/Client.js'
+  import type {torrent, peer} from '../wailsjs/go/models'
+  import {onDestroy} from 'svelte'
+  import TopBar from './components/TopBar.svelte'
+  import StatusBar from './components/StatusBar.svelte'
+  import TorrentItem from './components/TorrentItem.svelte'
+  import EmptyState from './components/EmptyState.svelte'
+  import DetailPanel from './components/DetailPanel.svelte'
 
-  let resultText: string = "Add a torrent file"
-  let fileData: string
+  let fileInput: HTMLInputElement
+  let isDragging = false
+  let selectedFile: File | null = null
+  let uploadStatus = ''
+  let torrents: any[] = []
+  let selectedTorrentId: number | null = null
+  let peers: peer.PeerStats[] = []
+  let statsUpdateInterval: number | null = null
+  let activeTab: 'details' | 'peers' = 'details'
 
-  function addTorrent(): void {
-    // This is a placeholder - you'll need to implement file upload
-    console.log("Add torrent functionality coming soon")
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault()
+    isDragging = true
   }
+
+  function handleDragLeave(e: DragEvent) {
+    e.preventDefault()
+    isDragging = false
+  }
+
+  async function handleDrop(e: DragEvent) {
+    e.preventDefault()
+    isDragging = false
+
+    const files = e.dataTransfer?.files
+    if (files && files.length > 0) {
+      const file = files[0]
+      if (file.name.endsWith('.torrent')) {
+        selectedFile = file
+        await uploadTorrent(file)
+      } else {
+        uploadStatus = 'Error: Please select a .torrent file'
+      }
+    }
+  }
+
+  function handleFileSelect(e: Event) {
+    const target = e.target as HTMLInputElement
+    const files = target.files
+    if (files && files.length > 0) {
+      const file = files[0]
+      if (file.name.endsWith('.torrent')) {
+        selectedFile = file
+        uploadTorrent(file)
+      } else {
+        uploadStatus = 'Error: Please select a .torrent file'
+      }
+    }
+  }
+
+  function formatHash(hash: number[]): string {
+    return hash.map(b => b.toString(16).padStart(2, '0')).join('')
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i]
+  }
+
+  function formatBytesPerSec(bytes: number): string {
+    return formatBytes(bytes) + '/s'
+  }
+
+  async function updateAllTorrentsStats() {
+    for (const torrent of torrents) {
+      if (torrent.torrentData?.metainfo?.info?.hash) {
+        const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
+        try {
+          const stats = await GetTorrentStats(infoHash)
+          if (stats) {
+            torrent.progress = stats.progress
+            torrent.downloadSpeed = formatBytesPerSec(stats.downloadRate)
+            torrent.uploadSpeed = formatBytesPerSec(stats.uploadRate)
+
+            // Update peers if this is the selected torrent
+            if (selectedTorrentId === torrent.id) {
+              peers = stats.peers || []
+            }
+          }
+        } catch (error) {
+          console.error('Failed to load stats:', error)
+        }
+      }
+    }
+    torrents = torrents // trigger reactivity
+  }
+
+  async function uploadTorrent(file: File) {
+    try {
+      uploadStatus = `Uploading ${file.name}...`
+      const arrayBuffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(arrayBuffer)
+
+      const result: torrent.Torrent = await AddTorrent(Array.from(bytes))
+      uploadStatus = `Success: ${file.name} added`
+      selectedFile = null
+
+      const newTorrent = {
+        id: Date.now(),
+        fileName: file.name,
+        torrentData: result,
+        status: 'downloading',
+        progress: 0,
+        downloadSpeed: '0 KB/s',
+        uploadSpeed: '0 KB/s'
+      }
+
+      torrents = [...torrents, newTorrent]
+      selectedTorrentId = newTorrent.id
+    } catch (error) {
+      uploadStatus = `Error: ${error}`
+    }
+  }
+
+  async function removeTorrent(id: number) {
+    const torrent = torrents.find(t => t.id === id)
+    if (torrent && torrent.torrentData?.metainfo?.info?.hash) {
+      const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
+      try {
+        await RemoveTorrent(infoHash)
+        uploadStatus = 'Torrent removed'
+      } catch (error) {
+        console.error('Failed to remove torrent:', error)
+        uploadStatus = `Error: Failed to remove torrent`
+        return
+      }
+    }
+
+    torrents = torrents.filter(t => t.id !== id)
+    if (selectedTorrentId === id) {
+      selectedTorrentId = null
+    }
+  }
+
+  function selectTorrent(id: number) {
+    selectedTorrentId = selectedTorrentId === id ? null : id
+    activeTab = 'details'
+  }
+
+  function openFileDialog() {
+    fileInput.click()
+  }
+
+  $: selectedTorrent = torrents.find(t => t.id === selectedTorrentId)
+
+  // Clear peers when selection changes to null
+  $: if (!selectedTorrent) {
+    peers = []
+  }
+
+  // Start stats update interval when we have torrents
+  $: if (torrents.length > 0) {
+    if (!statsUpdateInterval) {
+      updateAllTorrentsStats() // Update immediately
+      statsUpdateInterval = setInterval(updateAllTorrentsStats, 2000)
+    }
+  } else {
+    if (statsUpdateInterval) {
+      clearInterval(statsUpdateInterval)
+      statsUpdateInterval = null
+    }
+  }
+
+  onDestroy(() => {
+    if (statsUpdateInterval) {
+      clearInterval(statsUpdateInterval)
+    }
+  })
 </script>
 
-<main>
-  <img alt="Wails logo" id="logo" src="{logo}">
-  <div class="result" id="result">{resultText}</div>
-  <div class="input-box" id="input">
-    <input autocomplete="off" bind:value={fileData} class="input" id="name" type="text"/>
-    <button class="btn" on:click={addTorrent}>Add</button>
+<main class="{isDragging ? 'dragging' : ''}"
+      on:dragover={handleDragOver}
+      on:dragleave={handleDragLeave}
+      on:drop={handleDrop}>
+
+  <TopBar
+    torrentCount={torrents.length}
+    onAddTorrent={openFileDialog}
+  />
+
+  <div class="content">
+    <div class="content-layout">
+      <div class="torrent-list">
+        {#if torrents.length === 0}
+          <EmptyState onAddTorrent={openFileDialog} />
+        {:else}
+          {#each torrents as torrent (torrent.id)}
+            <TorrentItem
+              id={torrent.id}
+              torrentData={torrent.torrentData}
+              fileName={torrent.fileName}
+              progress={torrent.progress}
+              downloadSpeed={torrent.downloadSpeed}
+              uploadSpeed={torrent.uploadSpeed}
+              selected={selectedTorrentId === torrent.id}
+              onSelect={() => selectTorrent(torrent.id)}
+              onRemove={() => removeTorrent(torrent.id)}
+            />
+          {/each}
+        {/if}
+      </div>
+
+      {#if selectedTorrent}
+        <DetailPanel
+          torrentData={selectedTorrent.torrentData}
+          {peers}
+          bind:activeTab
+        />
+      {/if}
+    </div>
   </div>
+
+  <StatusBar
+    status={uploadStatus || 'Ready'}
+    isError={uploadStatus.startsWith('Error')}
+    isSuccess={uploadStatus.startsWith('Success')}
+  />
+
+  <input
+    type="file"
+    accept=".torrent"
+    bind:this={fileInput}
+    on:change={handleFileSelect}
+    style="display: none"
+  />
 </main>
 
 <style>
-
-  #logo {
-    display: block;
-    width: 50%;
-    height: 50%;
-    margin: auto;
-    padding: 10% 0 0;
-    background-position: center;
-    background-repeat: no-repeat;
-    background-size: 100% 100%;
-    background-origin: content-box;
+  main {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--color-bg-primary);
   }
 
-  .result {
-    height: 20px;
-    line-height: 20px;
-    margin: 1.5rem auto;
+  main.dragging {
+    background-color: var(--color-bg-hover);
   }
 
-  .input-box .btn {
-    width: 60px;
-    height: 30px;
-    line-height: 30px;
-    border-radius: 3px;
-    border: none;
-    margin: 0 0 0 20px;
-    padding: 0 8px;
-    cursor: pointer;
+  main.dragging::after {
+    content: 'Drop .torrent file to add';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: var(--font-size-3xl);
+    color: var(--color-text-tertiary);
+    pointer-events: none;
   }
 
-  .input-box .btn:hover {
-    background-image: linear-gradient(to top, #cfd9df 0%, #e2ebf0 100%);
-    color: #333333;
+  .content {
+    flex: 1;
+    overflow: hidden;
+    padding: var(--spacing-6);
   }
 
-  .input-box .input {
-    border: none;
-    border-radius: 3px;
-    outline: none;
-    height: 30px;
-    line-height: 30px;
-    padding: 0 10px;
-    background-color: rgba(240, 240, 240, 1);
-    -webkit-font-smoothing: antialiased;
+  .content-layout {
+    display: flex;
+    gap: var(--spacing-6);
+    height: 100%;
   }
 
-  .input-box .input:hover {
-    border: none;
-    background-color: rgba(255, 255, 255, 1);
+  .torrent-list {
+    flex: 1;
+    overflow-y: auto;
+    min-width: 0;
   }
-
-  .input-box .input:focus {
-    border: none;
-    background-color: rgba(255, 255, 255, 1);
-  }
-
 </style>

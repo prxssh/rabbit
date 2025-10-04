@@ -1,8 +1,68 @@
+export namespace peer {
+	
+	export class PeerStats {
+	    // Go type: netip
+	    Addr: any;
+	    Downloaded: number;
+	    Uploaded: number;
+	    RequestsSent: number;
+	    BlocksReceived: number;
+	    BlocksFailed: number;
+	    // Go type: time
+	    LastActive: any;
+	    // Go type: time
+	    ConnectedAt: any;
+	    ConnectedFor: number;
+	    DownloadRate: number;
+	    IsChoked: boolean;
+	    IsInterested: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PeerStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Addr = this.convertValues(source["Addr"], null);
+	        this.Downloaded = source["Downloaded"];
+	        this.Uploaded = source["Uploaded"];
+	        this.RequestsSent = source["RequestsSent"];
+	        this.BlocksReceived = source["BlocksReceived"];
+	        this.BlocksFailed = source["BlocksFailed"];
+	        this.LastActive = this.convertValues(source["LastActive"], null);
+	        this.ConnectedAt = this.convertValues(source["ConnectedAt"], null);
+	        this.ConnectedFor = source["ConnectedFor"];
+	        this.DownloadRate = source["DownloadRate"];
+	        this.IsChoked = source["IsChoked"];
+	        this.IsInterested = source["IsInterested"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace torrent {
 	
 	export class File {
-	    Length: number;
-	    Path: string[];
+	    length: number;
+	    path: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new File(source);
@@ -10,18 +70,18 @@ export namespace torrent {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.Length = source["Length"];
-	        this.Path = source["Path"];
+	        this.length = source["length"];
+	        this.path = source["path"];
 	    }
 	}
 	export class Info {
-	    Hash: number[];
-	    Name: string;
-	    PieceLength: number;
-	    Pieces: number[][];
-	    Private: boolean;
-	    Length: number;
-	    Files: File[];
+	    hash: number[];
+	    name: string;
+	    pieceLength: number;
+	    pieces: number[][];
+	    private: boolean;
+	    length: number;
+	    files: File[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Info(source);
@@ -29,13 +89,13 @@ export namespace torrent {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.Hash = source["Hash"];
-	        this.Name = source["Name"];
-	        this.PieceLength = source["PieceLength"];
-	        this.Pieces = source["Pieces"];
-	        this.Private = source["Private"];
-	        this.Length = source["Length"];
-	        this.Files = this.convertValues(source["Files"], File);
+	        this.hash = source["hash"];
+	        this.name = source["name"];
+	        this.pieceLength = source["pieceLength"];
+	        this.pieces = source["pieces"];
+	        this.private = source["private"];
+	        this.length = source["length"];
+	        this.files = this.convertValues(source["files"], File);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -57,15 +117,15 @@ export namespace torrent {
 		}
 	}
 	export class Metainfo {
-	    Info?: Info;
-	    Announce: string;
-	    AnnounceList: string[][];
+	    info?: Info;
+	    announce: string;
+	    announceList: string[][];
 	    // Go type: time
-	    CreationDate: any;
-	    CreatedBy: string;
-	    Comment: string;
-	    Encoding: string;
-	    URLs: string[];
+	    creationDate: any;
+	    createdBy: string;
+	    comment: string;
+	    encoding: string;
+	    urls: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Metainfo(source);
@@ -73,14 +133,54 @@ export namespace torrent {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.Info = this.convertValues(source["Info"], Info);
-	        this.Announce = source["Announce"];
-	        this.AnnounceList = source["AnnounceList"];
-	        this.CreationDate = this.convertValues(source["CreationDate"], null);
-	        this.CreatedBy = source["CreatedBy"];
-	        this.Comment = source["Comment"];
-	        this.Encoding = source["Encoding"];
-	        this.URLs = source["URLs"];
+	        this.info = this.convertValues(source["info"], Info);
+	        this.announce = source["announce"];
+	        this.announceList = source["announceList"];
+	        this.creationDate = this.convertValues(source["creationDate"], null);
+	        this.createdBy = source["createdBy"];
+	        this.comment = source["comment"];
+	        this.encoding = source["encoding"];
+	        this.urls = source["urls"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Stats {
+	    downloaded: number;
+	    uploaded: number;
+	    downloadRate: number;
+	    uploadRate: number;
+	    progress: number;
+	    peers: peer.PeerStats[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Stats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.downloaded = source["downloaded"];
+	        this.uploaded = source["uploaded"];
+	        this.downloadRate = source["downloadRate"];
+	        this.uploadRate = source["uploadRate"];
+	        this.progress = source["progress"];
+	        this.peers = this.convertValues(source["peers"], peer.PeerStats);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -102,13 +202,9 @@ export namespace torrent {
 		}
 	}
 	export class Torrent {
-	    Size: number;
-	    ClientID: number[];
-	    Metainfo?: Metainfo;
-	    // Go type: tracker
-	    Tracker?: any;
-	    // Go type: peer
-	    PeerManager?: any;
+	    size: number;
+	    clientId: number[];
+	    metainfo?: Metainfo;
 	
 	    static createFrom(source: any = {}) {
 	        return new Torrent(source);
@@ -116,11 +212,9 @@ export namespace torrent {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.Size = source["Size"];
-	        this.ClientID = source["ClientID"];
-	        this.Metainfo = this.convertValues(source["Metainfo"], Metainfo);
-	        this.Tracker = this.convertValues(source["Tracker"], null);
-	        this.PeerManager = this.convertValues(source["PeerManager"], null);
+	        this.size = source["size"];
+	        this.clientId = source["clientId"];
+	        this.metainfo = this.convertValues(source["metainfo"], Metainfo);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

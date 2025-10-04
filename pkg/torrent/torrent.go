@@ -33,19 +33,19 @@ const (
 // to gracefully terminate it.
 type Torrent struct {
 	// Size is the total byte size of the torrent content.
-	Size int64
+	Size int64 `json:"size"`
 
 	// ClientID is this client's unique 20-byte peer ID.
-	ClientID [sha1.Size]byte
+	ClientID [sha1.Size]byte `json:"clientId"`
 
 	// Metainfo contains the parsed torrent metadata.
-	Metainfo *Metainfo
+	Metainfo *Metainfo `json:"metainfo"`
 
 	// Tracker handles communication with the torrent tracker.
-	Tracker *tracker.Tracker
+	Tracker *tracker.Tracker `json:"-"`
 
 	// PeerManager coordinates all peer connections and downloads.
-	PeerManager *peer.Manager
+	PeerManager *peer.Manager `json:"-"`
 
 	// Internal lifecycle management
 	cancel   context.CancelFunc
@@ -127,6 +127,34 @@ func (t *Torrent) Stop() {
 			t.cancel()
 		}
 	})
+}
+
+// Stats represents download progress and statistics for a torrent
+type Stats struct {
+	Downloaded   int64            `json:"downloaded"`
+	Uploaded     int64            `json:"uploaded"`
+	DownloadRate int64            `json:"downloadRate"`
+	UploadRate   int64            `json:"uploadRate"`
+	Progress     float64          `json:"progress"`
+	Peers        []peer.PeerStats `json:"peers"`
+}
+
+func (t *Torrent) GetStats() *Stats {
+	stats := t.PeerManager.Stats()
+
+	progress := 0.0
+	if t.Size > 0 {
+		progress = (float64(stats.TotalDownloaded) / float64(t.Size)) * 100.0
+	}
+
+	return &Stats{
+		Progress:     progress,
+		Downloaded:   stats.TotalDownloaded,
+		Uploaded:     stats.TotalUploaded,
+		DownloadRate: stats.DownloadRate,
+		UploadRate:   stats.UploadRate,
+		Peers:        stats.Peers,
+	}
 }
 
 func (t *Torrent) announceLoop(ctx context.Context) error {

@@ -5,6 +5,8 @@ import {context} from '../models';
 
 export function AddTorrent(arg1:Array<number>):Promise<torrent.Torrent>;
 
-export function RemoveTorrent(arg1:any):Promise<void>;
+export function GetTorrentStats(arg1:string):Promise<torrent.Stats>;
+
+export function RemoveTorrent(arg1:string):Promise<void>;
 
 export function Startup(arg1:context.Context):Promise<void>;

@@ -3,6 +3,7 @@ package peer
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -46,6 +47,8 @@ type Peer struct {
 	blocksReceived  int
 	blocksFailed    int
 	lastActiveAt    time.Time
+
+	stopOnce sync.Once
 }
 
 // PeerStats represents performance metrics for a single peer connection.
@@ -171,8 +174,22 @@ func (p *Peer) run(ctx context.Context) error {
 }
 
 func (p *Peer) cleanup() error {
-	close(p.outq)
-	return p.conn.Close()
+	var err error
+
+	p.stopOnce.Do(func() {
+		if p.outq != nil {
+			close(p.outq)
+		}
+
+		if p.conn != nil {
+			if cerr := p.conn.Close(); cerr != nil &&
+				!errors.Is(cerr, net.ErrClosed) {
+				err = cerr
+			}
+		}
+	})
+
+	return err
 }
 
 // readLoop continuously reads and processes messages from the peer until
