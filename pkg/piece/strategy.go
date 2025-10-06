@@ -32,6 +32,12 @@ const (
 	StrategyRandomFirst
 )
 
+// selectSequentialPiecesToDownload implements StrategySequential.
+//
+// It advances (nextPiece, nextBlock) cursors, skipping verified pieces, and
+// emits up to 'limit' block requests for the next eligible piece that the peer
+// 'bf' actually has. Each returned request is registered as in-flight
+// (ownership recorded).
 func (pk *Picker) selectSequentialPiecesToDownload(
 	peer netip.AddrPort,
 	bf bitfield.Bitfield,
@@ -76,6 +82,11 @@ func (pk *Picker) selectSequentialPiecesToDownload(
 	return requests
 }
 
+// selectRarestPiecesForDownload implements StrategyRarestFirst.
+//
+// It iterates availability buckets from rarest to most common and, for each
+// eligible piece the peer has, assigns WANT blocks up to 'limit'. Ownership and
+// per-piece duplicate caps are respected.
 func (pk *Picker) selectRarestPiecesForDownload(
 	peer netip.AddrPort,
 	bf bitfield.Bitfield,
@@ -83,6 +94,7 @@ func (pk *Picker) selectRarestPiecesForDownload(
 ) []*Request {
 	requests := make([]*Request, 0, limit)
 
+	// TODO (@prxssh): replace 150 with a dynamic upper bound
 	for avail := 0; avail <= 150 && len(requests) < limit; avail++ {
 		bucket, exists := pk.availabilityBuckets[avail]
 		if !exists || len(bucket) == 0 {
@@ -124,6 +136,11 @@ func (pk *Picker) selectRarestPiecesForDownload(
 	return requests
 }
 
+// selectRandomFirstPiecesForDownload implements StrategyRandomFirst.
+//
+// It shuffles the set of eligible pieces the peer has and assigns WANT blocks
+// up to 'limit'. Useful to de-clump early piece selection before switching to a
+// more structured strategy (e.g., rarest-first).
 func (pk *Picker) selectRandomFirstPiecesForDownload(
 	peer netip.AddrPort,
 	bf bitfield.Bitfield,
@@ -173,18 +190,20 @@ func (pk *Picker) selectRandomFirstPiecesForDownload(
 	return requests
 }
 
+// assignBlockToPeer records ownership for (pieceIdx, blockIdx) by 'peer' and
+// returns a concrete Request describing the block transfer.
+//
+// Side effects:
+//   - marks the block inflight and increments pendingRequests
+//   - updates owners map with send timestamp (for timeout handling)
+//   - updates reverse indices (peerBlockAssignments, peerInflightCount)
 func (pk *Picker) assignBlockToPeer(
 	peer netip.AddrPort,
 	pieceIdx, blockIdx int,
 ) *Request {
 	piece := pk.pieces[pieceIdx]
 	block := piece.blocks[blockIdx]
-
-	begin := blockIdx * pk.BlockLength
-	length := pk.BlockLength
-	if blockIdx == piece.blockCount-1 {
-		length = piece.lastBlock
-	}
+	begin, length, _ := BlockBounds(piece.length, blockIdx)
 
 	block.status = blockInflight
 	block.pendingRequests++
@@ -208,6 +227,8 @@ func (pk *Picker) assignBlockToPeer(
 }
 
 // packKey encodes (piece, block) into a compact uint64 for reverse indexing.
+//
+// Layout: high 32 bits = pieceIdx, low 32 bits = blockIdx.
 func packKey(pieceIdx, blockIdx int) uint64 {
 	return (uint64(uint32(pieceIdx)) << 32) | uint64(uint32(blockIdx))
 }

@@ -2,9 +2,183 @@ package piece
 
 import (
 	"crypto/sha1"
+	"fmt"
 	"net/netip"
 	"time"
 )
+
+// PieceCount returns how many pieces are needed to cover totalSize bytes, given
+// a fixed pieceLength (except the last piece which may be shorter).
+func PieceCount(totalSize, pieceLength int64) int {
+	if totalSize <= 0 || pieceLength <= 0 {
+		return 0
+	}
+
+	return int((totalSize + pieceLength - 1) / pieceLength)
+}
+
+// LastPieceLength returns the exact byte length of the last piece.
+// For totals that are an exact multiple of pieceLength, this equals
+// pieceLength.
+func LastPieceLength(totalSize, pieceLength int64) int {
+	if totalSize <= 0 || pieceLength <= 0 {
+		return 0
+	}
+
+	rem := int(totalSize % pieceLength)
+	if rem == 0 {
+		return int(pieceLength)
+	}
+
+	return rem
+}
+
+// PieceLengthAt returns the piece length for a specific piece index.
+// All pieces but the last are pieceLength; the last may be shorter.
+func PieceLengthAt(index int, totalSize, pieceLength int64) (int, error) {
+	pc := PieceCount(totalSize, pieceLength)
+	if index < 0 || index >= pc {
+		return 0, fmt.Errorf(
+			"piece index out of range: %d (count=%d)",
+			index,
+			pc,
+		)
+	}
+
+	if index == pc-1 {
+		return LastPieceLength(totalSize, pieceLength), nil
+	}
+	return int(pieceLength), nil
+}
+
+// PieceOffsetBounds returns [start,end) byte offsets in the global stream for a
+// piece.
+func PieceOffsetBounds(
+	index int,
+	totalSize, pieceLength int64,
+) (start int64, end int64, err error) {
+	pl, err := PieceLengthAt(index, totalSize, pieceLength)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	start = int64(index) * pieceLength
+	end = start + int64(pl)
+	return start, end, nil
+}
+
+// PieceIndexForOffset maps a stream byte offset to its piece index.
+// Returns -1 when offset is out of range.
+func PieceIndexForOffset(offset, totalSize, pieceLength int64) int {
+	if offset < 0 || offset >= totalSize || pieceLength <= 0 {
+		return -1
+	}
+	return int(offset / pieceLength)
+}
+
+// BlockCountForPiece returns how many blocks compose a piece of length
+// pieceLen, given a fixed blockLen (except the last block which may be
+// shorter).
+func BlockCountForPiece(pieceLen, blockLen int) int {
+	if pieceLen <= 0 || blockLen <= 0 {
+		return 0
+	}
+
+	n := pieceLen / blockLen
+	if pieceLen%blockLen != 0 {
+		n++
+	}
+
+	return n
+}
+
+// LastBlockLength returns the exact byte length of the final block in a piece.
+func LastBlockLength(pieceLen, blockLen int) int {
+	if pieceLen <= 0 || blockLen <= 0 {
+		return 0
+	}
+
+	rem := pieceLen % blockLen
+	if rem == 0 {
+		return blockLen
+	}
+
+	return rem
+}
+
+// BlockOffsetBounds returns the block's [begin,length] within a piece, where
+// begin is the byte offset from the start of the piece.
+func BlockOffsetBounds(
+	pieceLen, blockLen, blockIdx int,
+) (begin int, length int, err error) {
+	bc := BlockCountForPiece(pieceLen, blockLen)
+	if blockIdx < 0 || blockIdx >= bc {
+		return 0, 0, fmt.Errorf(
+			"block index out of range: %d (count=%d)",
+			blockIdx,
+			bc,
+		)
+	}
+
+	begin = blockIdx * blockLen
+	length = blockLen
+	if blockIdx == bc-1 {
+		length = LastBlockLength(pieceLen, blockLen)
+	}
+
+	return begin, length, nil
+}
+
+// BlockIndexForBegin returns the block index inside a piece for a given byte
+// offset 'begin' within that piece. Returns -1 when out of range.
+func BlockIndexForBegin(begin, pieceLen, blockLen int) int {
+	if begin < 0 || begin >= pieceLen || blockLen <= 0 {
+		return -1
+	}
+
+	return begin / blockLen
+}
+
+// BlocksInPiece uses the package-wide BlockLength.
+func BlocksInPiece(pieceLen int) int {
+	return BlockCountForPiece(pieceLen, BlockLength)
+}
+
+// LastBlockInPiece uses the package-wide BlockLength.
+func LastBlockInPiece(pieceLen int) int {
+	return LastBlockLength(pieceLen, BlockLength)
+}
+
+// BlockBounds uses the package-wide BlockLength.
+func BlockBounds(pieceLen, blockIdx int) (begin int, length int, err error) {
+	return BlockOffsetBounds(pieceLen, BlockLength, blockIdx)
+}
+
+// StreamToPieceBlock maps a stream offset to
+// (pieceIdx, blockIdx, beginWithinPiece). Returns (-1,-1,-1) on invalid input.
+func StreamToPieceBlock(
+	offset, totalSize, pieceLength int64,
+	blockLen int,
+) (pieceIdx int, blockIdx int, begin int) {
+	pieceIdx = PieceIndexForOffset(offset, totalSize, pieceLength)
+	if pieceIdx < 0 {
+		return -1, -1, -1
+	}
+
+	start, _, err := PieceOffsetBounds(pieceIdx, totalSize, pieceLength)
+	if err != nil {
+		return -1, -1, -1
+	}
+
+	begin = int(offset - start) // begin within piece
+	pl, _ := PieceLengthAt(pieceIdx, totalSize, pieceLength)
+	blockIdx = BlockIndexForBegin(begin, pl, blockLen)
+	if blockIdx < 0 {
+		return -1, -1, -1
+	}
+
+	return pieceIdx, blockIdx, begin
+}
 
 // BlockSize is the wire-level request granularity.
 //
@@ -59,8 +233,7 @@ type pieceState struct {
 	length int
 
 	// blockCount is the number of requestable blocks in this piece. All
-	// blocks
-	// except the last are BlockSize long; see LastBlock.
+	// blocks except the last are BlockSize long; see LastBlock.
 	blockCount int
 
 	// lastBlock is the byte size of the final block in this piece. If
@@ -100,16 +273,16 @@ type pieceState struct {
 }
 
 func (pk *Picker) PieceHash(idx int) [sha1.Size]byte {
-	pk.mut.RLock()
-	defer pk.mut.RUnlock()
+	pk.mu.RLock()
+	defer pk.mu.RUnlock()
 
 	return pk.pieces[idx].sha
 }
 
 // CurrentPieceIndex returns the first piece that is not yet verified.
 func (pk *Picker) CurrentPieceIndex() (int, bool) {
-	pk.mut.RLock()
-	defer pk.mut.RUnlock()
+	pk.mu.RLock()
+	defer pk.mu.RUnlock()
 
 	for i := 0; i < pk.PieceCount; i++ {
 		if !pk.pieces[i].verified {
@@ -123,8 +296,8 @@ func (pk *Picker) CurrentPieceIndex() (int, bool) {
 // CapacityForPeer returns remaining assignment slots for this peer based on
 // picker-owned pipeline accounting and config limits.
 func (pk *Picker) CapacityForPeer(peer netip.AddrPort) int {
-	pk.mut.RLock()
-	defer pk.mut.RUnlock()
+	pk.mu.RLock()
+	defer pk.mu.RUnlock()
 
 	left := pk.cfg.MaxInflightRequests - len(pk.peerBlockAssignments[peer])
 	if left < 0 {
@@ -136,8 +309,8 @@ func (pk *Picker) CapacityForPeer(peer netip.AddrPort) int {
 // MarkPieceVerified stamps the current sequential piece as verified on success,
 // or resets its blocks to WANT on failure (so it is re-downloaded).
 func (pk *Picker) MarkPieceVerified(ok bool) {
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
 
 	idx := -1
 	for i := 0; i < pk.PieceCount; i++ {
@@ -153,6 +326,7 @@ func (pk *Picker) MarkPieceVerified(ok bool) {
 	ps := pk.pieces[idx]
 	if ok {
 		ps.verified = true
+		pk.bitfield.Set(idx)
 		avail := ps.availability
 		delete(pk.availabilityBuckets[avail], idx)
 		if len(pk.availabilityBuckets[avail]) == 0 {

@@ -36,22 +36,6 @@ type File struct {
 	Path   []string `json:"path"`
 }
 
-func (m *Metainfo) Size() int64 {
-	if m.Info.Length > 0 {
-		return m.Info.Length
-	}
-	if len(m.Info.Files) == 0 {
-		return -1
-	}
-
-	var sum int64
-	for _, f := range m.Info.Files {
-		sum += f.Length
-	}
-
-	return sum
-}
-
 var (
 	ErrTopLevelNotDict = errors.New("metainfo: top-level is not a dict")
 	ErrAnnounceMissing = errors.New(
@@ -75,6 +59,22 @@ var (
 	)
 	ErrCreationDateInvalid = errors.New("metainfo: invalid creation date")
 )
+
+func (m *Metainfo) Size() int64 {
+	if m.Info.Length > 0 {
+		return m.Info.Length
+	}
+	if len(m.Info.Files) == 0 {
+		return -1
+	}
+
+	var sum int64
+	for _, f := range m.Info.Files {
+		sum += f.Length
+	}
+
+	return sum
+}
 
 func ParseMetainfo(data []byte) (*Metainfo, error) {
 	raw, err := bencode.Unmarshal(data)
@@ -215,6 +215,7 @@ func parseFiles(v any) ([]*File, error) {
 	}
 
 	files := make([]*File, 0, len(arr))
+
 	for i, it := range arr {
 		m, ok := it.(map[string]any)
 		if !ok {

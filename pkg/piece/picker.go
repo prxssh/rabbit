@@ -41,7 +41,7 @@ type Request struct {
 }
 
 // Config captures picker-wide knobs that selection logic and timers use.
-type Config struct {
+type PickerConfig struct {
 	// DownloadStrategy chooses how to rank eligible pieces (see Strategy).
 	DownloadStrategy Strategy
 
@@ -66,14 +66,42 @@ type Config struct {
 	MaxRequestsPerBlocks int
 }
 
-func withDefaultConfig() Config {
-	return Config{
+func DefaultPickerConfig() PickerConfig {
+	return PickerConfig{
 		DownloadStrategy:     StrategySequential,
 		MaxInflightRequests:  20,
 		RequestTimeout:       30 * time.Second,
 		EndgameDupPerBlock:   2,
 		MaxRequestsPerBlocks: 4,
 	}
+}
+
+// PieceState represents the download state of a piece
+type PieceState int
+
+const (
+	PieceStateNotStarted PieceState = 0
+	PieceStateInProgress PieceState = 1
+	PieceStateCompleted  PieceState = 2
+)
+
+// PieceStates returns a slice of piece states indicating the download status.
+// The slice index corresponds to the piece index.
+func (pk *Picker) PieceStates() []PieceState {
+	pk.mu.RLock()
+	defer pk.mu.RUnlock()
+
+	states := make([]PieceState, pk.PieceCount)
+	for i, p := range pk.pieces {
+		if p.verified {
+			states[i] = PieceStateCompleted
+		} else if p.doneBlocks > 0 {
+			states[i] = PieceStateInProgress
+		} else {
+			states[i] = PieceStateNotStarted
+		}
+	}
+	return states
 }
 
 // Picker is the global download planner/state holder for a single torrent.
@@ -90,7 +118,7 @@ type Picker struct {
 	PieceCount int
 
 	// Cfg holds picker configuration.
-	cfg Config
+	cfg PickerConfig
 
 	// pieces is the complete set of per-piece states, indexed by piece
 	// index.
@@ -128,7 +156,7 @@ type Picker struct {
 	// rng is used for StrategyRandomFirst and tie-breaking when multiple
 	// pieces have identical rank (e.g., same rarity and priority).
 	rng *rand.Rand
-	mut sync.RWMutex
+	mu  sync.RWMutex
 
 	// peerBlockAssignments is a reverse index mapping each peer to the set
 	// of blocks they are currently assigned to fetch. Allows for fast
@@ -141,45 +169,36 @@ type Picker struct {
 	// requests complete or timeout. This prevents any single peer from
 	// monopolizing the download pipeline.
 	peerInflightCount map[netip.AddrPort]int
+
+	// bitfield caches which pieces are verified. Updated whenever
+	// MarkPieceVerified is called.
+	bitfield bitfield.Bitfield
 }
 
 func NewPicker(
-	pieceLength, torrentSize int64,
+	torrentSize, pieceLength int64,
 	pieceHashes [][sha1.Size]byte,
-	cfg *Config,
+	cfg *PickerConfig,
 ) *Picker {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	c := withDefaultConfig()
+	c := DefaultPickerConfig()
 	if cfg != nil {
 		c = *cfg
 	}
 
-	n := len(pieceHashes)
-
-	lastPieceLen := int(torrentSize - (int64(n-1) * pieceLength))
-	if lastPieceLen <= 0 {
-		lastPieceLen = int(pieceLength)
-	}
-
-	totalBlocks := 0
+	n, totalBlocks := len(pieceHashes), 0
 	pieces := make([]*pieceState, n)
+	lastPieceLen := LastPieceLength(torrentSize, pieceLength)
 
 	for i := 0; i < n; i++ {
-		plen := int(pieceLength)
-		if i == n-1 {
-			plen = int(lastPieceLen)
-		}
-
-		blockCount := (plen + BlockLength - 1) / BlockLength
+		plen, _ := PieceLengthAt(i, torrentSize, pieceLength)
+		blockCount := BlocksInPiece(plen)
 		totalBlocks += blockCount
-
-		last := plen - (blockCount-1)*BlockLength
-		if blockCount == 1 {
-			last = plen
-		}
+		last := LastBlockInPiece(plen)
 
 		blocks := make([]*block, blockCount)
+
 		for i := 0; i < blockCount; i++ {
 			blocks[i] = &block{
 				owners: make(map[netip.AddrPort]*ownerMeta),
@@ -221,14 +240,23 @@ func NewPicker(
 		availabilityBuckets:  availabilityBuckets,
 		peerBlockAssignments: peerBlockAssignments,
 		peerInflightCount:    make(map[netip.AddrPort]int),
+		bitfield:             bitfield.New(n),
 	}
 }
 
-// OnPeerGone: drop this peer from every block’s owner-set and reclaim any
-// blocks that now have no owners (i.e., nobody is fetching them).
+func (pk *Picker) Bitfield() bitfield.Bitfield {
+	pk.mu.RLock()
+	pk.mu.RUnlock()
+
+	return pk.bitfield
+}
+
+// OnPeerGone removes 'peer' from ownership of all blocks and updates
+// availability based on its bitfield. Any blocks left with no owners are
+// moved back to WANT so they can be reassigned quickly.
 func (pk *Picker) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
 
 	for i := 0; i < pk.PieceCount; i++ {
 		if !bf.Has(i) {
@@ -271,21 +299,22 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
 	delete(pk.peerInflightCount, peer)
 }
 
-// OnBlockReceived marks the block DONE, clears owners, and returns a list of
-// duplicate owners to cancel (engame) plus whether the piece completed.
+// OnBlockReceived marks the block DONE, clears duplicate owners, and returns a
+// list of cancellations to send for any duplicates (endgame). The bool result
+// indicates whether the piece is now complete.
 func (pk *Picker) OnBlockReceived(
 	peer netip.AddrPort,
 	pieceIdx, begin int,
 ) (bool, []Cancel) {
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
 
 	if pieceIdx < 0 || pieceIdx >= pk.PieceCount {
 		return false, nil
 	}
 
 	ps := pk.pieces[pieceIdx]
-	bi := begin / pk.BlockLength
+	bi := BlockIndexForBegin(begin, ps.length, pk.BlockLength)
 	if bi < 0 || bi >= ps.blockCount {
 		return false, nil
 	}
@@ -321,14 +350,16 @@ func (pk *Picker) OnBlockReceived(
 	return ps.doneBlocks == ps.blockCount, cancels
 }
 
-// NextForPeer returns atmost ONE request for this peer and registers ownership.
+// NextForPeer chooses up to one next block to request from this peer,
+// respecting its unchoked state and per-peer pipeline limit. It also registers
+// ownership (peer→block) when a request is issued.
 func (pk *Picker) NextForPeer(pv *PeerView) []*Request {
 	if !pv.Unchoked {
 		return nil
 	}
 
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
 
 	limit := pk.cfg.MaxInflightRequests - pv.Pipelined
 	if limit < 0 {
@@ -353,17 +384,18 @@ func (pk *Picker) NextForPeer(pv *PeerView) []*Request {
 	}
 }
 
-// OnTimeout reclaims a single block for a given peer if they owned it.
+// OnTimeout reclaims a single block for a given peer if they owned it. If no
+// owners remain after removal, the block returns to WANT.
 func (pk *Picker) OnTimeout(peer netip.AddrPort, pieceIdx, begin int) {
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
 
 	if pieceIdx < 0 || pieceIdx >= pk.PieceCount {
 		return
 	}
 
 	ps := pk.pieces[pieceIdx]
-	bi := begin / pk.BlockLength
+	bi := BlockIndexForBegin(begin, ps.length, pk.BlockLength)
 	if bi < 0 || bi >= ps.blockCount {
 		return
 	}
@@ -391,9 +423,12 @@ func (pk *Picker) OnTimeout(peer netip.AddrPort, pieceIdx, begin int) {
 	}
 }
 
+// OnPeerBitfield updates piece availability counts based on a newly received
+// full bitfield from 'peer'. Availability increases for every piece the peer
+// has.
 func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
 
 	for i := 0; i < pk.PieceCount; i++ {
 		if !bf.Has(i) {
@@ -404,41 +439,18 @@ func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
 	}
 }
 
+// OnPeerHave updates availability for a single piece announced by 'peer' via a
+// HAVE message. Used for incremental availability updates after handshake.
 func (pk *Picker) OnPeerHave(peer netip.AddrPort, pieceIdx int) {
-	pk.mut.Lock()
-	defer pk.mut.Unlock()
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
 
 	pk.updatePieceAvailability(pieceIdx, 1)
 }
 
-// PieceState represents the download state of a piece
-type PieceState int
-
-const (
-	PieceStateNotStarted PieceState = 0
-	PieceStateInProgress PieceState = 1
-	PieceStateCompleted  PieceState = 2
-)
-
-// PieceStates returns a slice of piece states indicating the download status.
-// The slice index corresponds to the piece index.
-func (pk *Picker) PieceStates() []PieceState {
-	pk.mut.RLock()
-	defer pk.mut.RUnlock()
-
-	states := make([]PieceState, pk.PieceCount)
-	for i, p := range pk.pieces {
-		if p.verified {
-			states[i] = PieceStateCompleted
-		} else if p.doneBlocks > 0 {
-			states[i] = PieceStateInProgress
-		} else {
-			states[i] = PieceStateNotStarted
-		}
-	}
-	return states
-}
-
+// updatePieceAvailability moves a piece index between availability buckets and
+// applies the delta to the piece's availability counter. 'val' should usually
+// be +1 (peer has it) or -1 (peer gone/didn't have it).
 func (pk *Picker) updatePieceAvailability(idx, val int) {
 	oldAvail := pk.pieces[idx].availability
 	newAvail := oldAvail + val
