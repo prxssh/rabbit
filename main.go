@@ -19,9 +19,13 @@ var assets embed.FS
 func main() {
 	setupLogger()
 
-	client := torrent.NewClient()
+	client, err := torrent.NewClient()
+	if err != nil {
+		slog.Error("client initialization failed", "error", err)
+		os.Exit(1)
+	}
 
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:            "Rabbit - BitTorrent Client & Search Engine",
 		Width:            1024,
 		Height:           768,

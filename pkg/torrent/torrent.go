@@ -2,9 +2,12 @@ package torrent
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
+	"log/slog"
+	"math/rand"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -15,22 +18,107 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Config defines behavior and resource limits for a torrent download.
+type Config struct {
+	// DefaultDownloadDir is the default directory where NEW torrent files
+	// are saved. Changing this only affects new torrents; existing torrents
+	// continue downloading to their original location.
+	DefaultDownloadDir string
+
+	// Port is the TCP port this client listens on for incoming peer
+	// connections.
+	Port uint16
+
+	// NumWant is the maximum number of peers to request the tracker.
+	NumWant uint32
+
+	// MaxUploadRate limits upload speed in bytes/second. 0 = unlimited.
+	MaxUploadRate int64
+
+	// MaxDownloadRate limits download speed in bytes/second. 0 = unlimited.
+	MaxDownloadRate int64
+
+	// AnnounceInterval overrides tracker's suggested interval.
+	// 0 uses tracker default.
+	AnnounceInterval time.Duration
+
+	// MinAnnounceInterval enforces a minimum time between announces.
+	MinAnnounceInterval time.Duration
+
+	// MaxAnnounceBackoff caps exponential backoff for failed announces.
+	MaxAnnounceBackoff time.Duration
+
+	// EnableIPv6 allows connections to IPv6 peers.
+	EnableIPv6 bool
+
+	// EnableDHT enables DHT for peer discovery (future).
+	EnableDHT bool
+
+	// EnablePEX enables peer exchange protocol (future).
+	EnablePEX bool
+
+	// PieceManagerConfig configures piece selection and storage.
+	PieceManagerConfig *piece.Config
+
+	// PeerManagerConfig configures peer download & broadcast.
+	PeerManagerConfig *peer.Config
+
+	// ClientIDPrefix customizes the peer ID prefix (e.g., "-EC0001-").
+	// Must be exactly 8 bytes. Empty uses default.
+	ClientIDPrefix string
+}
+
+// DefaultConfig returns sensible defaults for most use cases.
+func DefaultConfig() Config {
+	downloadDir := getDefaultDownloadDir()
+	pieceManagerCfg := piece.DefaultConfig()
+	peerManagerCfg := peer.DefaultConfig()
+
+	return Config{
+		DefaultDownloadDir:  downloadDir,
+		PieceManagerConfig:  &pieceManagerCfg,
+		PeerManagerConfig:   &peerManagerCfg,
+		Port:                6969,
+		NumWant:             50,
+		MaxUploadRate:       0, // unlimited
+		MaxDownloadRate:     0, // unlimited
+		AnnounceInterval:    0, // use tracker default
+		MinAnnounceInterval: 2 * time.Minute,
+		MaxAnnounceBackoff:  5 * time.Minute,
+		EnableIPv6:          true,
+		EnableDHT:           false,
+		EnablePEX:           false,
+		ClientIDPrefix:      "-EC0001-",
+	}
+}
+
 type Client struct {
 	ctx      context.Context
+	clientID [sha1.Size]byte
 	mu       sync.RWMutex
+	cfg      Config
 	torrents map[[sha1.Size]byte]*Torrent
 }
 
-func NewClient() *Client {
-	return &Client{torrents: make(map[[sha1.Size]byte]*Torrent)}
+func NewClient() (*Client, error) {
+	clientID, err := generatePeerID()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{
+		torrents: make(map[[sha1.Size]byte]*Torrent),
+		clientID: clientID,
+		cfg:      DefaultConfig(),
+	}, nil
 }
 
 func (c *Client) Startup(ctx context.Context) {
 	c.ctx = ctx
 }
 
-func (c *Client) AddTorrent(data []byte, downloadDir string) (*Torrent, error) {
-	torrent, err := NewTorrent(data, downloadDir)
+func (c *Client) AddTorrent(data []byte) (*Torrent, error) {
+	torrent, err := NewTorrent(c.clientID, data, c.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -39,10 +127,7 @@ func (c *Client) AddTorrent(data []byte, downloadDir string) (*Torrent, error) {
 	c.torrents[torrent.Metainfo.Info.Hash] = torrent
 	c.mu.Unlock()
 
-	go func() {
-		torrent.Run(c.ctx)
-	}()
-
+	go func() { torrent.Run(c.ctx) }()
 	return torrent, nil
 }
 
@@ -87,8 +172,6 @@ func (c *Client) GetTorrentStats(infoHashHex string) *Stats {
 	return torrent.GetStats()
 }
 
-// SelectDownloadDirectory shows a directory picker dialog and returns the
-// selected path
 func (c *Client) SelectDownloadDirectory() (string, error) {
 	path, err := runtime.OpenDirectoryDialog(
 		c.ctx,
@@ -102,17 +185,17 @@ func (c *Client) SelectDownloadDirectory() (string, error) {
 	return path, nil
 }
 
-const (
-	// backoffStart is the initial retry delay when tracker announces fail.
-	backoffStart = 15 * time.Second
+func (c *Client) GetConfig() Config {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cfg
+}
 
-	// backoffMax is the maximum retry delay for failed tracker announces.
-	backoffMax = 5 * time.Minute
-
-	// defaultAnnounceInterval is used when the tracker doesn't specify an
-	// interval.
-	defaultAnnounceInterval = 30 * time.Minute
-)
+func (c *Client) UpdateConfig(cfg Config) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cfg = cfg
+}
 
 // Torrent represents a single BitTorrent download session.
 //
@@ -120,68 +203,58 @@ const (
 // selection for downloading a torrent. Call Run to start the download and Stop
 // to gracefully terminate it.
 type Torrent struct {
-	// Size is the total byte size of the torrent content.
+	// size is the total byte size of the torrent content.
 	Size int64 `json:"size"`
 
-	// ClientID is this client's unique 20-byte peer ID.
+	// clientID is this client's unique 20-byte peer ID.
 	ClientID [sha1.Size]byte `json:"clientId"`
 
-	// Metainfo contains the parsed torrent metadata.
+	// metainfo contains the parsed torrent metadata.
 	Metainfo *Metainfo `json:"metainfo"`
 
-	// Tracker handles communication with the torrent tracker.
-	Tracker *tracker.Tracker `json:"-"`
+	// tracker handles communication with the torrent tracker.
+	tracker *tracker.Tracker `json:"-"`
 
-	// PeerManager coordinates all peer connections and downloads.
-	PeerManager *peer.Manager `json:"-"`
+	// peerManager coordinates all peer connections and downloads.
+	peerManager *peer.Manager `json:"-"`
 
-	// Internal lifecycle management
+	// internal lifecycle management.
 	cancel   context.CancelFunc
 	stopOnce sync.Once
+
+	// config for this torrent.
+	cfg Config
+
+	// log is the default logger for this torrent.
+	log *slog.Logger
 }
 
-func NewTorrent(data []byte, downloadDir string) (*Torrent, error) {
-	clientID, err := generatePeerID()
-	if err != nil {
-		return nil, err
-	}
-
+func NewTorrent(
+	clientID [sha1.Size]byte,
+	data []byte,
+	cfg Config,
+) (*Torrent, error) {
 	metainfo, err := ParseMetainfo(data)
 	if err != nil {
 		return nil, err
 	}
 	size := metainfo.Size()
 
+	log := slog.Default().With("torrent", metainfo.Info.Name)
+
 	tracker, err := tracker.NewTracker(
 		metainfo.Announce,
 		metainfo.AnnounceList,
+		log,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// Use default directory if not provided
-	if downloadDir == "" {
-		downloadDir = "./data/torrents"
-	}
-
-	// Build full path: downloadDir/torrentName
-	downloadPath := downloadDir + "/" + metainfo.Info.Name
-
-	storage, err := storage.OpenSingleFile(
-		downloadPath,
-		size,
-	)
+	pieceManager, err := newPieceManager(metainfo, cfg.PieceManagerConfig)
 	if err != nil {
 		return nil, err
 	}
-
-	picker := piece.NewPicker(
-		metainfo.Info.PieceLength,
-		metainfo.Size(),
-		metainfo.Info.Pieces,
-		nil,
-	)
 
 	peerManager := peer.NewManager(
 		clientID,
@@ -189,17 +262,19 @@ func NewTorrent(data []byte, downloadDir string) (*Torrent, error) {
 		len(metainfo.Info.Pieces),
 		metainfo.Info.PieceLength,
 		size,
-		picker,
-		storage,
-		nil,
+		pieceManager,
+		log,
+		cfg.PeerManagerConfig,
 	)
 
 	return &Torrent{
+		Size:        size,
 		ClientID:    clientID,
 		Metainfo:    metainfo,
-		Tracker:     tracker,
-		PeerManager: peerManager,
-		Size:        size,
+		cfg:         cfg,
+		log:         log,
+		tracker:     tracker,
+		peerManager: peerManager,
 	}, nil
 }
 
@@ -208,13 +283,9 @@ func (t *Torrent) Run(ctx context.Context) error {
 	eg, ctx := errgroup.WithContext(ctx)
 
 	eg.Go(func() error { return t.announceLoop(ctx) })
-	eg.Go(func() error { return t.PeerManager.Run(ctx) })
+	eg.Go(func() error { return t.peerManager.Run(ctx) })
 
-	err := eg.Wait()
-
-	t.sendStoppedEvent()
-
-	return err
+	return eg.Wait()
 }
 
 func (t *Torrent) Stop() {
@@ -237,7 +308,7 @@ type Stats struct {
 }
 
 func (t *Torrent) GetStats() *Stats {
-	stats := t.PeerManager.Stats()
+	stats := t.peerManager.Stats()
 
 	progress := 0.0
 	if t.Size > 0 {
@@ -256,73 +327,143 @@ func (t *Torrent) GetStats() *Stats {
 }
 
 func (t *Torrent) announceLoop(ctx context.Context) error {
-	event := tracker.EventStarted
-	nextDelay := time.Duration(0)
-	backoff := backoffStart
+	const maxBackoffShift = 4
+	consecutiveFailures := 0
+
+	ticker := time.NewTicker(0)
+	defer ticker.Stop()
 
 	for {
-		if nextDelay > 0 {
-			timer := time.NewTimer(nextDelay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
+		select {
+		case <-ctx.Done():
+			stopCtx, cancel := context.WithTimeout(
+				context.Background(),
+				10*time.Second,
+			)
+			defer cancel()
+
+			announceParams := t.buildAnnounceParams()
+			announceParams.Event = tracker.EventStopped
+			_, _ = t.tracker.Announce(stopCtx, announceParams)
+
+			return ctx.Err()
+		case <-ticker.C:
+			resp, err := t.tracker.Announce(
+				ctx,
+				t.buildAnnounceParams(),
+			)
+			if err != nil {
+				consecutiveFailures++
+				backoff := t.calculateBackoff(
+					consecutiveFailures,
+					maxBackoffShift,
+				)
+				t.log.Error(
+					"announce failed",
+					"error",
+					err,
+					"failures",
+					consecutiveFailures,
+					"retry_in",
+					backoff,
+				)
+
+				ticker.Reset(backoff)
+				continue
 			}
-		}
 
-		params := t.buildAnnounceParams(event)
-		resp, err := t.Tracker.Announce(ctx, params)
-		if err != nil {
-			nextDelay = backoff
-			if backoff < backoffMax {
-				backoff *= 2
-				if backoff > backoffMax {
-					backoff = backoffMax
-				}
-			}
-			event = tracker.EventNone
-			continue
-		}
+			consecutiveFailures = 0
+			t.peerManager.AdmitPeers(resp.Peers)
+			interval := t.getNextAnnounceInterval(resp)
 
-		t.PeerManager.AdmitPeers(resp.Peers)
-		backoff = backoffStart
-
-		interval := resp.Interval
-		if interval == 0 {
-			interval = defaultAnnounceInterval
+			ticker.Reset(interval)
 		}
-		if resp.MinInterval > 0 && resp.MinInterval > interval {
-			interval = resp.MinInterval
-		}
-		nextDelay = interval
-
-		event = tracker.EventNone
 	}
 }
 
-func (t *Torrent) sendStoppedEvent() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
+	stats := t.peerManager.Stats()
 
-	params := t.buildAnnounceParams(tracker.EventStopped)
-	_, _ = t.Tracker.Announce(ctx, params)
-}
-
-func (t *Torrent) buildAnnounceParams(
-	event tracker.Event,
-) *tracker.AnnounceParams {
-	stats := t.PeerManager.Stats()
+	event := tracker.EventStarted
+	if t.Size-stats.TotalDownloaded == 0 {
+		event = tracker.EventCompleted
+	}
 
 	return &tracker.AnnounceParams{
 		InfoHash:   t.Metainfo.Info.Hash,
 		PeerID:     t.ClientID,
-		Port:       6969,
+		Port:       t.cfg.Port,
 		Uploaded:   uint64(stats.TotalUploaded),
 		Downloaded: uint64(stats.TotalDownloaded),
 		Left:       uint64(t.Size - stats.TotalUploaded),
 		Event:      event,
-		NumWant:    100,
+		NumWant:    t.cfg.NumWant,
+	}
+}
+
+func (t *Torrent) getNextAnnounceInterval(
+	resp *tracker.AnnounceResponse,
+) time.Duration {
+	interval := t.cfg.AnnounceInterval
+	if interval == 0 {
+		interval = 2 * time.Minute
+	}
+
+	if resp.Interval > 0 {
+		interval = resp.Interval
+	}
+	if resp.MinInterval > 0 && resp.MinInterval > interval {
+		interval = resp.MinInterval
+	}
+
+	if t.cfg.MinAnnounceInterval > 0 &&
+		interval < t.cfg.MinAnnounceInterval {
+		interval = t.cfg.MinAnnounceInterval
+	}
+
+	return interval
+}
+
+func (t *Torrent) calculateBackoff(failures int, maxShift int) time.Duration {
+	const baseDelay = 15 * time.Second
+
+	shift := failures - 1
+	if shift > maxShift {
+		shift = maxShift
+	}
+
+	delay := baseDelay * (1 << uint(shift))
+
+	if delay > t.cfg.MaxAnnounceBackoff {
+		delay = t.cfg.MaxAnnounceBackoff
+	}
+
+	jitter := time.Duration(rand.Int63n(int64(delay) / 2))
+	return delay - (delay / 4) + jitter
+}
+
+func getDefaultDownloadDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		if cwd, err := os.Getwd(); err == nil {
+			return filepath.Join(cwd, "downloads")
+		}
+		return "./downloads"
+	}
+
+	switch runtime.Environment(context.Background()).Platform {
+	case "windows":
+		return filepath.Join(home, "Downloads", "rabbit")
+	case "darwin":
+		return filepath.Join(home, "Downloads", "rabbit")
+	default: // linux, bsd, etc.
+		return filepath.Join(
+			home,
+			".local",
+			"share",
+			"rabbit",
+			"downloads",
+		)
 	}
 }
 
@@ -337,4 +478,36 @@ func generatePeerID() ([sha1.Size]byte, error) {
 	}
 
 	return peerID, nil
+}
+
+func newPieceManager(
+	metainfo *Metainfo,
+	cfg *piece.Config,
+) (*piece.Manager, error) {
+	size := metainfo.Size()
+
+	var (
+		paths [][]string
+		lens  []int64
+	)
+
+	for _, file := range metainfo.Info.Files {
+		paths = append(paths, file.Path)
+		lens = append(lens, file.Length)
+	}
+
+	if metainfo.Info.Length == 0 {
+		paths = append(paths, []string{metainfo.Info.Name})
+		lens = append(lens, size)
+	}
+
+	return piece.NewPieceManager(
+		metainfo.Info.Name,
+		size,
+		metainfo.Info.PieceLength,
+		metainfo.Info.Pieces,
+		paths,
+		lens,
+		cfg,
+	)
 }

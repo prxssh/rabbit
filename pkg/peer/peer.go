@@ -2,7 +2,6 @@ package peer
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/pkg/piece"
-	"github.com/prxssh/rabbit/pkg/storage"
 	"github.com/prxssh/rabbit/pkg/utils/bitfield"
 	"golang.org/x/sync/errgroup"
 )
@@ -39,7 +37,7 @@ type Peer struct {
 	outq chan *Message
 
 	// Performance metrics
-	statsMut        sync.RWMutex
+	statsMu         sync.RWMutex
 	connectedAt     time.Time
 	downloadedBytes int64
 	uploadedBytes   int64
@@ -84,13 +82,7 @@ func dialPeer(
 		return nil, err
 	}
 
-	l := slog.Default().With(
-		"src", "peer",
-		"remote", conn.RemoteAddr().String(),
-		"local", conn.LocalAddr().String(),
-		"info_hash", hex.EncodeToString(m.infoHash[:]),
-	)
-
+	l := m.log.With("src", "peer", "addr", addr)
 	l.Info("connected")
 
 	_ = conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
@@ -98,16 +90,21 @@ func dialPeer(
 
 	hs := NewHandshake(m.infoHash, m.clientID)
 	if err := hs.Perform(conn); err != nil {
-		l.Warn("handshake failed", slog.String("err", err.Error()))
+		l.Warn("handshake failed", "err", err.Error())
 
 		_ = conn.Close()
 		return nil, err
 	}
+	if err := WriteMessage(conn, MessageBitfield(m.pieceManager.Bitfield())); err != nil {
+		l.Warn("send bitfield failed", "error", err.Error())
+
+		_ = conn.Close()
+		return nil, err
+
+	}
 
 	_ = conn.SetReadDeadline(time.Time{})
 	_ = conn.SetWriteDeadline(time.Time{})
-
-	l.Info("handshake ok")
 
 	return &Peer{
 		m:              m,
@@ -130,8 +127,8 @@ func dialPeer(
 
 // Stats returns a snapshot of this peer's current performance metrics.
 func (p *Peer) Stats() PeerStats {
-	p.statsMut.RLock()
-	defer p.statsMut.RUnlock()
+	p.statsMu.RLock()
+	defer p.statsMu.RUnlock()
 
 	connectedFor := time.Since(p.connectedAt)
 
@@ -203,10 +200,9 @@ func (p *Peer) readLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Info(
-				"loop exit",
-				slog.String("reason", "ctx"),
-				slog.String("err", ctx.Err().Error()),
+			l.Info("loop exit",
+				"reason", "ctx",
+				"error", ctx.Err().Error(),
 			)
 			return ctx.Err()
 		default:
@@ -217,10 +213,8 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			if time.Since(lastRecv) > 5*time.Minute {
 				l.Warn(
 					"idle timeout",
-					slog.Duration(
-						"idle",
-						time.Since(lastRecv),
-					),
+					"idle",
+					time.Since(lastRecv),
 				)
 
 				return context.DeadlineExceeded
@@ -228,9 +222,9 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			continue
 		}
 		if err != nil {
-			l.Warn("read error", slog.String("err", err.Error()))
+			l.Warn("read error", "error", err.Error())
 
-			p.m.picker.OnPeerGone(p.addr, p.bf)
+			p.m.pieceManager.OnPeerGone(p.addr, p.bf)
 			return err
 		}
 
@@ -241,9 +235,9 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 		lastRecv = time.Now()
 
-		p.statsMut.Lock()
+		p.statsMu.Lock()
 		p.lastActiveAt = lastRecv
-		p.statsMut.Unlock()
+		p.statsMu.Unlock()
 
 		switch msg.ID {
 		case MsgChoke:
@@ -261,7 +255,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 
 		case MsgBitfield:
 			p.bf = bitfield.FromBytes(msg.Payload)
-			p.m.picker.OnPeerBitfield(p.addr, p.bf)
+			p.m.pieceManager.OnPeerBitfield(p.addr, p.bf)
 
 			if p.shouldBeInterested() && !p.amInterested {
 				p.sendInterested()
@@ -275,7 +269,7 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			}
 
 			p.bf.Set(int(pieceIdx))
-			p.m.picker.OnPeerHave(p.addr, int(pieceIdx))
+			p.m.pieceManager.OnPeerHave(p.addr, int(pieceIdx))
 
 			if p.shouldBeInterested() && !p.amInterested {
 				p.sendInterested()
@@ -283,77 +277,50 @@ func (p *Peer) readLoop(ctx context.Context) error {
 			p.requestNextPiece()
 
 		case MsgPiece:
-			idx, begin, data, ok := msg.ParsePiece()
+			idx, _, data, ok := msg.ParsePiece()
 			if !ok {
-				p.statsMut.Lock()
+				p.statsMu.Lock()
 				p.blocksFailed++
-				p.statsMut.Unlock()
+				p.statsMu.Unlock()
 				continue
 			}
 
-			p.statsMut.Lock()
+			p.statsMu.Lock()
 			p.blocksReceived++
 			p.downloadedBytes += int64(len(data))
 			p.m.totalDownloaded += int64(len(data))
-			p.statsMut.Unlock()
+			p.statsMu.Unlock()
 
-			blockIdx := int(begin) / piece.BlockLength
-			isLastPiece := int(idx) == p.m.picker.PieceCount-1
-
-			p.m.storage.AddBlock(data, storage.BlockMetadata{
-				PieceIdx:    int(idx),
-				BlockIdx:    blockIdx,
-				PieceLength: int(p.m.pieceLength),
-				BlockLength: piece.BlockLength,
-				IsLastPiece: isLastPiece,
-				TotalSize:   p.m.size,
-			})
-
-			pieceDone, _ := p.m.picker.OnBlockReceived(
-				p.addr,
-				int(idx),
-				int(begin),
-			)
 			p.requestNextPiece()
 
-			if !pieceDone {
-				continue
-			}
+			l.Info("piece complete", "piece_idx", idx)
 
-			ok, err := p.m.storage.VerifyAndFlushPiece(
-				int(idx),
-				int(p.m.pieceLength),
-				p.m.picker.PieceHash(int(idx)),
-			)
-			if err != nil {
-				l.Warn("verify and flush failed", "error", err)
-				ok = false
-			}
-
-			p.m.picker.MarkPieceVerified(ok)
-			if !ok {
-				l.Warn("piece hash mismatch", "piece", idx)
-			}
-
-			p.m.BroadcastHave(int(idx), p.addr)
-
-			l.Info(
-				"piece verified and broadcasted",
-				slog.Int("piece", int(idx)),
-			)
-
-			// Request next piece after completing current one
 			p.requestNextPiece()
 
 		case MsgRequest:
-			// Peer is requesting a piece from us (not implemented
-			// yet)
+			index, begin, length, ok := msg.ParseRequest()
+			if !ok {
+				continue
+			}
+
+			block, err := p.m.pieceManager.ReadPiece(
+				int(index),
+				int(begin),
+				int(length),
+			)
+			if err != nil {
+				p.log.Error("read piece failure",
+					"error", err,
+					"index", index,
+					"begin", begin,
+					"length", length,
+				)
+				continue
+			}
+			p.outq <- MessagePiece(int(index), int(begin), block)
 
 		default:
-			l.Warn(
-				"message unknown",
-				slog.Int("message", int(msg.ID)),
-			)
+			l.Warn("message unknown", "message", msg.ID)
 		}
 
 	}
@@ -373,22 +340,19 @@ func (p *Peer) writeLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			l.Info(
 				"exit",
-				slog.String("reason", "ctx"),
-				slog.String("err", ctx.Err().Error()),
+				"reason", "ctx",
+				"err", ctx.Err().Error(),
 			)
 			return ctx.Err()
 
 		case msg, ok := <-p.outq:
 			if !ok {
-				l.Info("outq closed")
+				l.Warn("outq closed")
 				return nil
 			}
 
 			if err := p.writeMessage(msg); err != nil {
-				l.Warn(
-					"write failed",
-					slog.String("err", err.Error()),
-				)
+				l.Warn("write failed", "error", err.Error())
 				return err
 			}
 
@@ -401,7 +365,8 @@ func (p *Peer) writeLoop(ctx context.Context) error {
 			if err := p.writeMessage(nil); err != nil {
 				l.Warn(
 					"keepalive send error",
-					slog.String("err", err.Error()),
+					"error",
+					err.Error(),
 				)
 				return err
 			}
@@ -444,7 +409,7 @@ func (p *Peer) sendNotInterested() {
 }
 
 func (p *Peer) shouldBeInterested() bool {
-	idx, ok := p.m.picker.CurrentPieceIndex()
+	idx, ok := p.m.pieceManager.CurrentPieceIndex()
 	if !ok {
 		return false
 	}
@@ -466,7 +431,7 @@ func (p *Peer) requestNextPiece() {
 		return
 	}
 
-	reqs := p.m.picker.NextForPeer(pv)
+	reqs := p.m.pieceManager.NextForPeer(pv)
 	if len(reqs) == 0 {
 		return
 	}
@@ -474,9 +439,9 @@ func (p *Peer) requestNextPiece() {
 		p.outq <- MessageRequest(req.Piece, req.Begin, req.Length)
 	}
 
-	p.statsMut.Lock()
+	p.statsMu.Lock()
 	p.requestsSent += len(reqs)
-	p.statsMut.Unlock()
+	p.statsMu.Unlock()
 }
 
 func (p *Peer) piecePeerView() *piece.PeerView {

@@ -3,7 +3,9 @@
 import {torrent} from '../models';
 import {context} from '../models';
 
-export function AddTorrent(arg1:Array<number>,arg2:string):Promise<torrent.Torrent>;
+export function AddTorrent(arg1:Array<number>):Promise<torrent.Torrent>;
+
+export function GetConfig():Promise<torrent.Config>;
 
 export function GetTorrentStats(arg1:string):Promise<torrent.Stats>;
 
@@ -12,3 +14,5 @@ export function RemoveTorrent(arg1:string):Promise<void>;
 export function SelectDownloadDirectory():Promise<string>;
 
 export function Startup(arg1:context.Context):Promise<void>;
+
+export function UpdateConfig(arg1:torrent.Config):Promise<void>;

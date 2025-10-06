@@ -2,6 +2,7 @@ package piece
 
 import (
 	"crypto/sha1"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -18,9 +19,9 @@ import (
 type Config struct {
 	*PickerConfig
 
-	// RootDir represents the base directory where all the torrent data is
-	// saved.
-	RootDir string
+	// DownloadDir represents the base directory where all the torrent data
+	// is saved.
+	DownloadDir string
 }
 
 func DefaultConfig() Config {
@@ -47,7 +48,7 @@ func DefaultConfig() Config {
 	}
 
 	pickerCfg := DefaultPickerConfig()
-	return Config{PickerConfig: &pickerCfg, RootDir: rootDir}
+	return Config{PickerConfig: &pickerCfg, DownloadDir: rootDir}
 }
 
 // Manager coordinates between the piece picker (which decides what to download
@@ -78,7 +79,7 @@ func NewPieceManager(
 	}
 
 	store, err := NewStore(
-		cfg.RootDir,
+		cfg.DownloadDir,
 		torrentName,
 		paths,
 		lens,
@@ -174,4 +175,59 @@ func (m *Manager) OnTimeout(peer netip.AddrPort, pieceIdx, begin int) {
 
 func (m *Manager) PieceStates() []PieceState {
 	return m.picker.PieceStates()
+}
+
+func (m *Manager) CurrentPieceIndex() (int, bool) {
+	return m.picker.CurrentPieceIndex()
+}
+
+func (m *Manager) ReadPiece(index, begin, length int) ([]byte, error) {
+	pieceLen, err := PieceLengthAt(
+		index,
+		m.store.totalBytes,
+		m.store.pieceLength,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if begin < 0 || length <= 0 || begin+length > pieceLen {
+		return nil, fmt.Errorf(
+			"invalid request: index=%d begin=%d length=%d pieceLen=%d",
+			index,
+			begin,
+			length,
+			pieceLen,
+		)
+	}
+
+	if bi := BlockIndexForBegin(begin, pieceLen, BlockLength); bi >= 0 {
+		expBegin, expLen, _ := BlockOffsetBounds(
+			pieceLen,
+			BlockLength,
+			bi,
+		)
+		finalBlock := bi == BlockCountForPiece(pieceLen, BlockLength)-1
+		if !finalBlock && (begin != expBegin || length != expLen) {
+			return nil, fmt.Errorf(
+				"non-canonical block; want begin=%d len=%d for block=%d",
+				expBegin,
+				expLen,
+				bi,
+			)
+		}
+	}
+
+	start, _, _ := PieceOffsetBounds(
+		index,
+		m.store.totalBytes,
+		m.store.pieceLength,
+	)
+	streamOff := start + int64(begin)
+
+	buf := make([]byte, length)
+	if err := m.store.readStreamAt(buf, streamOff); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }

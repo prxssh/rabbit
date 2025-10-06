@@ -1,5 +1,33 @@
 export namespace peer {
 	
+	export class Config {
+	    MaxPeers: number;
+	    MaxInflightRequestsPerPeer: number;
+	    MaxRequestsPerPiece: number;
+	    PeerHeartbeatInterval: number;
+	    ReadTimeout: number;
+	    WriteTimeout: number;
+	    DialTimeout: number;
+	    KeepAliveInterval: number;
+	    PeerOutboundQueueBacklog: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.MaxPeers = source["MaxPeers"];
+	        this.MaxInflightRequestsPerPeer = source["MaxInflightRequestsPerPeer"];
+	        this.MaxRequestsPerPiece = source["MaxRequestsPerPiece"];
+	        this.PeerHeartbeatInterval = source["PeerHeartbeatInterval"];
+	        this.ReadTimeout = source["ReadTimeout"];
+	        this.WriteTimeout = source["WriteTimeout"];
+	        this.DialTimeout = source["DialTimeout"];
+	        this.KeepAliveInterval = source["KeepAliveInterval"];
+	        this.PeerOutboundQueueBacklog = source["PeerOutboundQueueBacklog"];
+	    }
+	}
 	export class PeerStats {
 	    // Go type: netip
 	    Addr: any;
@@ -58,8 +86,91 @@ export namespace peer {
 
 }
 
+export namespace piece {
+	
+	export class Config {
+	    DownloadStrategy: number;
+	    MaxInflightRequests: number;
+	    RequestTimeout: number;
+	    EndgameDupPerBlock: number;
+	    MaxRequestsPerBlocks: number;
+	    DownloadDir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DownloadStrategy = source["DownloadStrategy"];
+	        this.MaxInflightRequests = source["MaxInflightRequests"];
+	        this.RequestTimeout = source["RequestTimeout"];
+	        this.EndgameDupPerBlock = source["EndgameDupPerBlock"];
+	        this.MaxRequestsPerBlocks = source["MaxRequestsPerBlocks"];
+	        this.DownloadDir = source["DownloadDir"];
+	    }
+	}
+
+}
+
 export namespace torrent {
 	
+	export class Config {
+	    DefaultDownloadDir: string;
+	    Port: number;
+	    NumWant: number;
+	    MaxUploadRate: number;
+	    MaxDownloadRate: number;
+	    AnnounceInterval: number;
+	    MinAnnounceInterval: number;
+	    MaxAnnounceBackoff: number;
+	    EnableIPv6: boolean;
+	    EnableDHT: boolean;
+	    EnablePEX: boolean;
+	    PieceManagerConfig?: piece.Config;
+	    PeerManagerConfig?: peer.Config;
+	    ClientIDPrefix: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DefaultDownloadDir = source["DefaultDownloadDir"];
+	        this.Port = source["Port"];
+	        this.NumWant = source["NumWant"];
+	        this.MaxUploadRate = source["MaxUploadRate"];
+	        this.MaxDownloadRate = source["MaxDownloadRate"];
+	        this.AnnounceInterval = source["AnnounceInterval"];
+	        this.MinAnnounceInterval = source["MinAnnounceInterval"];
+	        this.MaxAnnounceBackoff = source["MaxAnnounceBackoff"];
+	        this.EnableIPv6 = source["EnableIPv6"];
+	        this.EnableDHT = source["EnableDHT"];
+	        this.EnablePEX = source["EnablePEX"];
+	        this.PieceManagerConfig = this.convertValues(source["PieceManagerConfig"], piece.Config);
+	        this.PeerManagerConfig = this.convertValues(source["PeerManagerConfig"], peer.Config);
+	        this.ClientIDPrefix = source["ClientIDPrefix"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class File {
 	    length: number;
 	    path: string[];

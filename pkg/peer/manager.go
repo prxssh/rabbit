@@ -3,14 +3,12 @@ package peer
 import (
 	"context"
 	"crypto/sha1"
-	"encoding/hex"
 	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/prxssh/rabbit/pkg/piece"
-	"github.com/prxssh/rabbit/pkg/storage"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -53,7 +51,7 @@ type Config struct {
 	PeerOutboundQueueBacklog int
 }
 
-func withDefaultConfig() Config {
+func DefaultConfig() Config {
 	return Config{
 		MaxPeers:                   50,
 		MaxInflightRequestsPerPeer: 5,
@@ -101,11 +99,9 @@ type Manager struct {
 	// infoHash is the SHA-1 hash identifying this torrent.
 	infoHash [sha1.Size]byte
 
-	// picker selects which pieces/blocks to request from peers.
-	picker *piece.Picker
-
-	// storage handles reading and writing piece data to disk.
-	storage *storage.Disk
+	// pieceManager manages piece selection, downloading, and saving them to
+	// disk.
+	pieceManager *piece.Manager
 
 	// peerCh receives candidate peer addresses to connect to. Buffered to
 	// prevent blocking callers of AdmitPeers.
@@ -136,31 +132,29 @@ func NewManager(
 	pieceCount int,
 	pieceLength,
 	size int64,
-	picker *piece.Picker,
-	storage *storage.Disk,
+	pieceManager *piece.Manager,
+	log *slog.Logger,
 	cfg *Config,
 ) *Manager {
-	c := withDefaultConfig()
+	c := DefaultConfig()
 	if cfg != nil {
 		c = *cfg
 	}
 
-	log := slog.Default().
-		With("src", "peer_manager", "info_hash", hex.EncodeToString(infoHash[:]))
+	log = slog.Default().With("src", "peer_manager")
 
 	return &Manager{
-		cfg:         c,
-		log:         log,
-		clientID:    clientID,
-		infoHash:    infoHash,
-		pieceCount:  pieceCount,
-		picker:      picker,
-		pieceLength: pieceLength,
-		storage:     storage,
-		size:        size,
-		dialSem:     make(chan struct{}, c.MaxPeers>>1),
-		peers:       make(map[netip.AddrPort]*Peer),
-		peerCh:      make(chan netip.AddrPort, c.MaxPeers),
+		cfg:          c,
+		log:          log,
+		clientID:     clientID,
+		infoHash:     infoHash,
+		pieceCount:   pieceCount,
+		pieceManager: pieceManager,
+		pieceLength:  pieceLength,
+		size:         size,
+		dialSem:      make(chan struct{}, c.MaxPeers>>1),
+		peers:        make(map[netip.AddrPort]*Peer),
+		peerCh:       make(chan netip.AddrPort, c.MaxPeers),
 	}
 }
 
@@ -189,8 +183,7 @@ func (m *Manager) Stats() Stats {
 		peerStats = append(peerStats, peer.Stats())
 	}
 
-	// Convert PieceState to int for JSON serialization
-	pieceStates := m.picker.PieceStates()
+	pieceStates := m.pieceManager.PieceStates()
 	intStates := make([]int, len(pieceStates))
 	for i, state := range pieceStates {
 		intStates[i] = int(state)
@@ -290,13 +283,10 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 
 				peer, err := dialPeer(dctx, m, addr)
 				if err != nil {
-					m.log.Debug(
+					m.log.Error(
 						"dial failed",
-						slog.String(
-							"addr",
-							addr.String(),
-						),
-						slog.String("err", err.Error()),
+						"addr", addr.String(),
+						"error", err.Error(),
 					)
 					return
 				}
@@ -397,8 +387,8 @@ func (m *Manager) cleanup() {
 			if err := p.cleanup(); err != nil {
 				m.log.Warn(
 					"failed to close peer",
-					slog.String("addr", p.addr.String()),
-					slog.String("error", err.Error()),
+					"addr", p.addr.String(),
+					"error", err.Error(),
 				)
 			}
 		}(peer)
