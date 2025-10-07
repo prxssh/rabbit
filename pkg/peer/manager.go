@@ -280,9 +280,10 @@ func (m *Manager) monitorPeerHeartbeat(ctx context.Context) error {
 
 		case <-ticker.C:
 			count := m.purgeInactivePeers()
-			m.log.Debug(
+			m.log.Info(
 				"purged inactive peers",
-				slog.Int("deleted", count),
+				"deleted", count,
+				"remaining_peers", m.peerCount(),
 			)
 		}
 	}

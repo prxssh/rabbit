@@ -83,21 +83,16 @@ func dialPeer(
 	}
 
 	l := m.log.With("src", "peer", "addr", addr)
-	l.Info("connected")
 
 	_ = conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
 	_ = conn.SetWriteDeadline(time.Now().Add(config.Load().WriteTimeout))
 
 	hs := NewHandshake(m.infoHash, m.clientID)
 	if err := hs.Perform(conn); err != nil {
-		l.Warn("handshake failed", "err", err.Error())
-
 		_ = conn.Close()
 		return nil, err
 	}
 	if err := WriteMessage(conn, MessageBitfield(m.pieceManager.Bitfield())); err != nil {
-		l.Warn("send bitfield failed", "error", err.Error())
-
 		_ = conn.Close()
 		return nil, err
 
