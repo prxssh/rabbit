@@ -266,8 +266,7 @@ func (t *Torrent) Run(ctx context.Context) error {
 				if err != nil {
 					t.log.Error(
 						"failed refill peer",
-						"error",
-						err,
+						"error", err,
 					)
 					continue
 				}
@@ -357,12 +356,9 @@ func (t *Torrent) announceLoop(ctx context.Context) error {
 				)
 				t.log.Error(
 					"announce failed",
-					"error",
-					err,
-					"failures",
-					consecutiveFailures,
-					"retry_in",
-					backoff,
+					"error", err,
+					"failures", consecutiveFailures,
+					"retry_in", backoff,
 				)
 
 				ticker.Reset(backoff)

@@ -2,7 +2,6 @@ package tracker
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -58,39 +57,13 @@ func (ht *HTTPTracker) Announce(
 		return nil, err
 	}
 
-	start := time.Now()
-	ht.log.Info(
-		"announce.begin",
-		slog.String(
-			"info_hash",
-			hex.EncodeToString(params.InfoHash[:]),
-		),
-		slog.String("event", params.Event.String()),
-		slog.Uint64("uploaded", params.Uploaded),
-		slog.Uint64("downloaded", params.Downloaded),
-		slog.Uint64("left", params.Left),
-		slog.Uint64("numwant", uint64(params.NumWant)),
-	)
-
 	resp, err := ht.client.Do(req)
-	lat := time.Since(start)
-
 	if err != nil {
-		ht.log.Warn(
-			"announce.error",
-			slog.Duration("latency", lat),
-			slog.String("err", err.Error()),
-		)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		ht.log.Warn(
-			"announce.http_status",
-			slog.Int("status", resp.StatusCode),
-		)
-
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf(
 			"tracker: announce returned non-ok status %d:%s",
@@ -101,29 +74,12 @@ func (ht *HTTPTracker) Announce(
 
 	r, err := parseAnnounceResponse(resp.Body)
 	if err != nil {
-		ht.log.Warn(
-			"announce.decode.error",
-			slog.Duration("latency", lat),
-			slog.String("err", err.Error()),
-		)
-
 		return nil, err
 	}
 
 	if r.TrackerID != "" {
 		ht.trackerID = r.TrackerID
 	}
-
-	ht.log.Info(
-		"announce.ok",
-		slog.Duration("latency", lat),
-		slog.String("trackerId", r.TrackerID),
-		slog.Duration("interval", r.Interval),
-		slog.Duration("minInterval", r.MinInterval),
-		slog.Int64("seeders", r.Seeders),
-		slog.Int64("leechers", r.Leechers),
-		slog.Int("peers", len(r.Peers)),
-	)
 
 	return r, nil
 }

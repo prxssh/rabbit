@@ -71,28 +71,15 @@ func (ut *UDPTracker) Announce(
 	ctx context.Context,
 	params *AnnounceParams,
 ) (*AnnounceResponse, error) {
-	ut.log.Info(
-		"udp announce begin",
-		"event", params.Event.String(),
-		"uploaded", params.Uploaded,
-		"downloaded", params.Downloaded,
-		"left", params.Left,
-		"numwant", uint64(params.NumWant),
-	)
-
 	deadline, hasDeadline := ctx.Deadline()
 
 	for n := 0; n < maxRetries; n++ {
 		if err := ctx.Err(); err != nil {
-			ut.log.Warn("udp announce ctx_done",
-				"error", ctx.Err().Error(),
-			)
 			return nil, err
 		}
 
 		timeout := backoffWindow(deadline, hasDeadline, n)
 		if timeout <= 0 {
-			ut.log.Warn("udp announce timeout window exhausted")
 			return nil, context.DeadlineExceeded
 		}
 		_ = ut.conn.SetDeadline(time.Now().Add(timeout))
@@ -100,49 +87,34 @@ func (ut *UDPTracker) Announce(
 		if time.Now().After(ut.connIDTTL) {
 			transactionID, err := randU32()
 			if err != nil {
-				ut.log.Warn(
-					"udp connect txid rand error",
-					"error",
-					err.Error(),
+				ut.log.Warn("udp connect txid rand error",
+					"error", err.Error(),
 				)
 				continue
 			}
 
-			start := time.Now()
 			if err := ut.sendConnectPacket(transactionID); err != nil {
-				ut.log.Warn(
-					"udp connect send error",
-					"error",
-					err.Error(),
+				ut.log.Warn("udp connect send error",
+					"error", err.Error(),
 				)
 				continue
 			}
 
 			connID, err := ut.readConnectPacket(transactionID)
-			lat := time.Since(start)
 			if err != nil {
 				ut.log.Warn("udp connect read error",
-					"latency", lat,
 					"err", err.Error(),
 				)
 				continue
 			}
 			ut.connID = connID
 			ut.connIDTTL = time.Now().Add(connectionIDTTL)
-
-			ut.log.Info("udp connect ok",
-				"latency", lat,
-				"conn_id", connID,
-				"valid_until", ut.connIDTTL,
-			)
 		}
 
 		transactionID, err := randU32()
 		if err != nil {
-			ut.log.Warn(
-				"udp announce txid rand error",
-				"error",
-				err.Error(),
+			ut.log.Warn("udp announce txid rand error",
+				"error", err.Error(),
 			)
 			continue
 		}
@@ -153,10 +125,8 @@ func (ut *UDPTracker) Announce(
 			ut.connID,
 			params,
 		); err != nil {
-			ut.log.Warn(
-				"udp announce send error",
-				"error",
-				err.Error(),
+			ut.log.Warn("udp announce send error",
+				"error", err.Error(),
 			)
 			continue
 		}
@@ -182,18 +152,9 @@ func (ut *UDPTracker) Announce(
 			continue
 		}
 
-		ut.log.Info("udp announce ok",
-			"latency", lat,
-			"interval", resp.Interval,
-			"seeders", resp.Seeders,
-			"leechers", resp.Leechers,
-			"peers", len(resp.Peers),
-			"attempt", n+1,
-		)
 		return resp, nil
 	}
 
-	ut.log.Warn("udp announce fail", "retries", maxRetries)
 	return nil, errors.New("tracker: exhausted all announce attempts")
 }
 
