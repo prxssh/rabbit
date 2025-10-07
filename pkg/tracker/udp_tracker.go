@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net"
 	"net/url"
 	"time"
+
+	"github.com/prxssh/rabbit/pkg/config"
 )
 
 const (
@@ -37,7 +38,6 @@ type UDPTracker struct {
 	key       uint32
 	connID    uint64
 	connIDTTL time.Time
-	isIPV6    bool
 	log       *slog.Logger
 }
 
@@ -61,10 +61,9 @@ func NewUDPTracker(url *url.URL, log *slog.Logger) (*UDPTracker, error) {
 	}
 
 	return &UDPTracker{
-		conn:   conn,
-		key:    key,
-		log:    log,
-		isIPV6: addr.IP.To4() == nil,
+		conn: conn,
+		key:  key,
+		log:  log,
 	}, nil
 }
 
@@ -73,32 +72,27 @@ func (ut *UDPTracker) Announce(
 	params *AnnounceParams,
 ) (*AnnounceResponse, error) {
 	ut.log.Info(
-		"udp.announce.begin",
-		slog.String(
-			"info_hash",
-			hex.EncodeToString(params.InfoHash[:]),
-		),
-		slog.String("event", params.Event.String()),
-		slog.Uint64("uploaded", params.Uploaded),
-		slog.Uint64("downloaded", params.Downloaded),
-		slog.Uint64("left", params.Left),
-		slog.Uint64("numwant", uint64(params.NumWant)),
+		"udp announce begin",
+		"event", params.Event.String(),
+		"uploaded", params.Uploaded,
+		"downloaded", params.Downloaded,
+		"left", params.Left,
+		"numwant", uint64(params.NumWant),
 	)
 
 	deadline, hasDeadline := ctx.Deadline()
 
 	for n := 0; n < maxRetries; n++ {
 		if err := ctx.Err(); err != nil {
-			ut.log.Warn(
-				"udp.announce.ctx_done",
-				slog.String("err", ctx.Err().Error()),
+			ut.log.Warn("udp announce ctx_done",
+				"error", ctx.Err().Error(),
 			)
 			return nil, err
 		}
 
 		timeout := backoffWindow(deadline, hasDeadline, n)
 		if timeout <= 0 {
-			ut.log.Warn("udp.announce.timeout_window_exhausted")
+			ut.log.Warn("udp announce timeout window exhausted")
 			return nil, context.DeadlineExceeded
 		}
 		_ = ut.conn.SetDeadline(time.Now().Add(timeout))
@@ -107,8 +101,9 @@ func (ut *UDPTracker) Announce(
 			transactionID, err := randU32()
 			if err != nil {
 				ut.log.Warn(
-					"udp.connect.txid.rand.error",
-					slog.String("err", err.Error()),
+					"udp connect txid rand error",
+					"error",
+					err.Error(),
 				)
 				continue
 			}
@@ -116,8 +111,9 @@ func (ut *UDPTracker) Announce(
 			start := time.Now()
 			if err := ut.sendConnectPacket(transactionID); err != nil {
 				ut.log.Warn(
-					"udp.connect.send_error",
-					slog.String("err", err.Error()),
+					"udp connect send error",
+					"error",
+					err.Error(),
 				)
 				continue
 			}
@@ -125,29 +121,28 @@ func (ut *UDPTracker) Announce(
 			connID, err := ut.readConnectPacket(transactionID)
 			lat := time.Since(start)
 			if err != nil {
-				ut.log.Warn(
-					"udp.connect.read.error",
-					slog.Duration("latency", lat),
-					slog.String("err", err.Error()),
+				ut.log.Warn("udp connect read error",
+					"latency", lat,
+					"err", err.Error(),
 				)
 				continue
 			}
 			ut.connID = connID
 			ut.connIDTTL = time.Now().Add(connectionIDTTL)
 
-			ut.log.Info(
-				"udp.connect.ok",
-				slog.Duration("latency", lat),
-				slog.Uint64("conn_id", connID),
-				slog.Time("valid_until", ut.connIDTTL),
+			ut.log.Info("udp connect ok",
+				"latency", lat,
+				"conn_id", connID,
+				"valid_until", ut.connIDTTL,
 			)
 		}
 
 		transactionID, err := randU32()
 		if err != nil {
 			ut.log.Warn(
-				"udp.announce.txid.rand.error",
-				slog.String("err", err.Error()),
+				"udp announce txid rand error",
+				"error",
+				err.Error(),
 			)
 			continue
 		}
@@ -159,8 +154,9 @@ func (ut *UDPTracker) Announce(
 			params,
 		); err != nil {
 			ut.log.Warn(
-				"udp.announce.send.error",
-				slog.String("err", err.Error()),
+				"udp announce send error",
+				"error",
+				err.Error(),
 			)
 			continue
 		}
@@ -172,35 +168,32 @@ func (ut *UDPTracker) Announce(
 				errors.Is(err, errTransactionIDMismatch) {
 				ut.connIDTTL = time.Time{}
 
-				ut.log.Warn(
-					"udp.announce.protocol_mismatch",
-					slog.String("err", err.Error()),
-					slog.Int("retry", n+1),
+				ut.log.Warn("udp announce protocol mismatch",
+					"error", err.Error(),
+					"retry", n+1,
 				)
 			} else {
-				ut.log.Warn(
-					"udp.announce.read.error",
-					slog.Duration("latency", lat),
-					slog.String("err", err.Error()),
-					slog.Int("retry", n+1),
+				ut.log.Warn("udp announce read error",
+					"latency", lat,
+					"err", err.Error(),
+					"retry", n+1,
 				)
 			}
 			continue
 		}
 
-		ut.log.Info(
-			"udp.announce.ok",
-			slog.Duration("latency", lat),
-			slog.Duration("interval", resp.Interval),
-			slog.Int64("seeders", resp.Seeders),
-			slog.Int64("leechers", resp.Leechers),
-			slog.Int("peers", len(resp.Peers)),
-			slog.Int("attempt", n+1),
+		ut.log.Info("udp announce ok",
+			"latency", lat,
+			"interval", resp.Interval,
+			"seeders", resp.Seeders,
+			"leechers", resp.Leechers,
+			"peers", len(resp.Peers),
+			"attempt", n+1,
 		)
 		return resp, nil
 	}
 
-	ut.log.Warn("udp.announce.fail", slog.Int("retries", maxRetries))
+	ut.log.Warn("udp announce fail", "retries", maxRetries)
 	return nil, errors.New("tracker: exhausted all announce attempts")
 }
 
@@ -272,14 +265,14 @@ func (ut *UDPTracker) sendAnnouncePacket(
 		return err
 	}
 
-	ut.log.Debug("udp.announce.send",
-		slog.Int("bytes", n),
-		slog.Uint64("txid", uint64(transactionID)),
-		slog.Uint64("conn_id", connectionID),
-		slog.Uint64("uploaded", params.Uploaded),
-		slog.Uint64("downloaded", params.Downloaded),
-		slog.Uint64("left", params.Left),
-		slog.String("event", params.Event.String()),
+	ut.log.Debug("udp announce send",
+		"bytes", n,
+		"txid", uint64(transactionID),
+		"conn_id", connectionID,
+		"uploaded", params.Uploaded,
+		"downloaded", params.Downloaded,
+		"left", params.Left,
+		"event", params.Event.String(),
 	)
 
 	return nil
@@ -314,7 +307,7 @@ func (ut *UDPTracker) readAnnouncePacket(
 	leechers := binary.BigEndian.Uint32(packet[12:16])
 	seeders := binary.BigEndian.Uint32(packet[16:20])
 
-	peers, err := decodePeers(packet[20:nread], ut.isIPV6)
+	peers, err := decodePeers(packet[20:nread], config.Load().HasIPV6)
 	if err != nil {
 		return nil, err
 	}

@@ -3,53 +3,12 @@ package piece
 import (
 	"crypto/sha1"
 	"fmt"
+	"log/slog"
 	"net/netip"
-	"os"
-	"path/filepath"
-	"runtime"
 
+	"github.com/prxssh/rabbit/pkg/config"
 	"github.com/prxssh/rabbit/pkg/utils/bitfield"
 )
-
-// Config defines runtime options for the piece manager.
-//
-// It includes picker behavior (via PickerConfig) and the root directory where
-// torrent data is stored on disk. The manager uses these settings to control
-// piece selection, verification, and file layout.
-type Config struct {
-	*PickerConfig
-
-	// DownloadDir represents the base directory where all the torrent data
-	// is saved.
-	DownloadDir string
-}
-
-func DefaultConfig() Config {
-	rootDir := "."
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		if cwd, err := os.Getwd(); err != nil {
-			rootDir = filepath.Join(cwd, "downloads")
-		}
-	}
-
-	switch os := runtime.GOOS; os {
-	case "windows":
-		rootDir = filepath.Join(home, "Downloads", "rabbit")
-	default:
-		rootDir = filepath.Join(
-			home,
-			".local",
-			"share",
-			"rabbit",
-			"downloads",
-		)
-	}
-
-	pickerCfg := DefaultPickerConfig()
-	return Config{PickerConfig: &pickerCfg, DownloadDir: rootDir}
-}
 
 // Manager coordinates between the piece picker (which decides what to download
 // next) and the storage layer (which handles verified writes to disk).
@@ -61,6 +20,7 @@ type Manager struct {
 	picker      *Picker
 	store       *Store
 	torrentSize int64
+	log         *slog.Logger
 }
 
 // NewPieceManager creates a Manager that coordinates piece picking and disk
@@ -71,35 +31,40 @@ func NewPieceManager(
 	pieceHashes [][sha1.Size]byte,
 	paths [][]string,
 	lens []int64,
-	cfg *Config,
+	log *slog.Logger,
 ) (*Manager, error) {
-	if cfg == nil {
-		temp := DefaultConfig()
-		cfg = &temp
+	if log == nil {
+		log = slog.Default()
 	}
+	log = log.With("src", "piece_manager")
 
 	store, err := NewStore(
-		cfg.DownloadDir,
+		config.Load().DefaultDownloadDir,
 		torrentName,
 		paths,
 		lens,
 		pieceLength,
+		log,
 	)
 	if err != nil {
+		log.Error("failed to create store", "error", err)
 		return nil, err
 	}
 
-	picker := NewPicker(
-		torrentSize,
-		pieceLength,
-		pieceHashes,
-		cfg.PickerConfig,
+	picker := NewPicker(torrentSize, pieceLength, pieceHashes)
+
+	log.Info(
+		"piece manager initialized",
+		"pieces", len(pieceHashes),
+		"piece_length", pieceLength,
+		"total_size", torrentSize,
 	)
 
 	return &Manager{
 		picker:      picker,
 		store:       store,
 		torrentSize: torrentSize,
+		log:         log,
 	}, nil
 }
 
@@ -145,10 +110,29 @@ func (m *Manager) OnBlockReceived(
 	hash := m.picker.PieceHash(pieceIdx)
 	ok, err := m.store.FlushPiece(pieceIdx, hash)
 	if err != nil {
+		m.log.Error(
+			"piece flush failed",
+			"piece", pieceIdx,
+			"error", err,
+		)
 		return true, cancels, err
 	}
 
-	m.picker.MarkPieceVerified(ok)
+	if ok {
+		m.log.Info(
+			"piece verified",
+			"piece", pieceIdx,
+			"peer", peer.String(),
+		)
+	} else {
+		m.log.Warn(
+			"piece verification failed",
+			"piece", pieceIdx,
+			"peer", peer.String(),
+		)
+	}
+
+	m.picker.MarkPieceVerified(pieceIdx, ok)
 
 	return true, cancels, nil
 }
@@ -158,6 +142,11 @@ func (m *Manager) NextForPeer(pv *PeerView) []*Request {
 }
 
 func (m *Manager) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
+	m.log.Debug(
+		"peer disconnected",
+		"peer", peer.String(),
+		"pieces_had", bf.Count(),
+	)
 	m.picker.OnPeerGone(peer, bf)
 }
 
@@ -227,6 +216,13 @@ func (m *Manager) ReadPiece(index, begin, length int) ([]byte, error) {
 
 	buf := make([]byte, length)
 	if err := m.store.readStreamAt(buf, streamOff); err != nil {
+		m.log.Error(
+			"failed to read piece",
+			"piece", index,
+			"begin", begin,
+			"length", length,
+			"error", err,
+		)
 		return nil, err
 	}
 	return buf, nil

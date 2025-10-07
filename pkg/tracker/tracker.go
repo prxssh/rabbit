@@ -194,7 +194,7 @@ func NewTracker(
 		})
 	}
 
-	log = slog.Default().With("component", "tracker", "tiers", len(tiers))
+	log = log.With("component", "tracker", "tiers", len(tiers))
 
 	return &Tracker{
 		log:      log,
@@ -282,13 +282,6 @@ func (t *Tracker) Stats() *Stats {
 	return &t.stats
 }
 
-func (t *Tracker) runAnnounceLoop(
-	ctx context.Context,
-	params *AnnounceParams,
-) error {
-	return nil
-}
-
 func (t *Tracker) snapshotTier(at int) []*url.URL {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -328,12 +321,9 @@ func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 	}
 
 	ul := t.log.With(
-		"scheme",
-		u.Scheme,
-		"host",
-		u.Host,
-		"path",
-		u.EscapedPath(),
+		"scheme", u.Scheme,
+		"host", u.Host,
+		"path", u.EscapedPath(),
 	)
 
 	var (

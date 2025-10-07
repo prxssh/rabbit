@@ -29,6 +29,11 @@ body {
     justify-content: center;
 }
 
+/* Wails/WebKit: ensure UI remains clickable in frameless windows */
+html, body, #app, main, * {
+    -webkit-app-region: no-drag;
+}
+
 /* Scrollbar Styling */
 ::-webkit-scrollbar {
     width: 8px;

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/pkg/bencode"
+	"github.com/prxssh/rabbit/pkg/config"
 	"github.com/prxssh/rabbit/pkg/utils/cast"
 )
 
@@ -137,7 +138,7 @@ func (ht *HTTPTracker) buildAnnounceURL(params *AnnounceParams) string {
 	q.Set("uploaded", strconv.FormatUint(params.Uploaded, 10))
 	q.Set("downloaded", strconv.FormatUint(params.Downloaded, 10))
 	q.Set("left", strconv.FormatUint(params.Left, 10))
-	q.Set("compact", "1")
+	// q.Set("compact", "1")
 
 	if params.NumWant > 0 {
 		q.Set("numwant", strconv.Itoa(int(params.NumWant)))
@@ -217,12 +218,14 @@ func parsePeers(d map[string]any) ([]netip.AddrPort, error) {
 		out = append(out, ps...)
 	}
 
-	if v6, ok := d["peers6"]; ok {
-		ps, err := decodePeers(v6, true)
-		if err != nil {
-			return nil, err
+	if config.Load().HasIPV6 {
+		if v6, ok := d["peers6"]; ok {
+			ps, err := decodePeers(v6, true)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ps...)
 		}
-		out = append(out, ps...)
 	}
 
 	return out, nil

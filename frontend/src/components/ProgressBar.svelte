@@ -2,6 +2,7 @@
   export let progress: number = 0 // 0 to 100
   export let height: string = '4px'
   export let showPercentage: boolean = false
+  export let label: string = ''
 
   $: clampedProgress = Math.min(Math.max(progress, 0), 100)
 </script>
@@ -12,6 +13,9 @@
       <span class="progress-text">{clampedProgress.toFixed(1)}%</span>
     {/if}
   </div>
+  {#if label}
+    <div class="progress-label">{label}</div>
+  {/if}
 </div>
 
 <style>
@@ -43,5 +47,17 @@
     color: var(--color-text-primary);
     font-weight: var(--font-weight-medium);
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  }
+
+  .progress-label {
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10px;
+    color: var(--color-text-primary);
+    pointer-events: none;
+    mix-blend-mode: normal;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.4);
   }
 </style>

@@ -12,12 +12,18 @@
   --color-border-tertiary: #333333;
   --color-border-active: #444444;
   --color-border-hover: #555555;
+  --color-border: var(--color-border-secondary);
 
   --color-text-primary: #dddddd;
   --color-text-secondary: #cccccc;
   --color-text-tertiary: #aaaaaa;
   --color-text-muted: #888888;
   --color-text-disabled: #666666;
+
+  /* Primary Color */
+  --color-primary: #3b82f6; /* blue */
+  --color-primary-dark: #2563eb;
+  --color-primary-light: #60a5fa;
 
   /* Status Colors */
   --color-success: #88ff88;
@@ -28,8 +34,15 @@
   --color-error-bg: #331111;
   --color-error-border: #551111;
 
+  --color-danger: #ff8888;
+  --color-danger-bg: #331111;
+  --color-danger-border: #551111;
+
   --color-warning-bg: #2a0000;
   --color-warning-border: #660000;
+
+  /* Accent (used for in-progress pieces in heatmap) */
+  --color-accent: #3b82f6; /* blue */
 
   /* Typography */
   --font-family-mono: 'Fira Code', 'JetBrains Mono', 'Courier New', monospace;
@@ -73,6 +86,9 @@
   --size-panel-width: 500px;
 
   /* Border Radius */
+  --border-radius-sm: 3px;
+  --border-radius-md: 4px;
+  --border-radius-lg: 8px;
   --radius-sm: 3px;
   --radius-base: 4px;
 

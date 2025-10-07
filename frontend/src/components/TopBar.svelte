@@ -3,13 +3,12 @@
   export let downloadSpeed: string = '0 KB/s'
   export let uploadSpeed: string = '0 KB/s'
   export let onAddTorrent: () => void
-  export let onSettings: () => void
+  export let onOpenSettings: () => void
 </script>
 
 <div class="topbar">
   <div class="logo">
     <span class="logo-text">rabbit</span>
-    <span class="logo-subtitle">BitTorrent Client</span>
   </div>
   <div class="topbar-actions">
     <div class="stats">
@@ -17,11 +16,11 @@
       <span class="stat-item">↑ {uploadSpeed}</span>
       <span class="stat-item">{torrentCount} torrents</span>
     </div>
+    <button class="icon-button settings-button" on:click={onOpenSettings} title="Settings">
+      ⚙
+    </button>
     <button class="icon-button add-button" on:click={onAddTorrent} title="Add Torrent">
       +
-    </button>
-    <button class="icon-button" on:click={onSettings} title="Settings">
-      ⚙
     </button>
   </div>
 </div>
@@ -48,13 +47,6 @@
     font-weight: var(--font-weight-medium);
     color: var(--color-text-primary);
     letter-spacing: var(--letter-spacing-wider);
-  }
-
-  .logo-subtitle {
-    font-size: var(--font-size-base);
-    color: var(--color-text-muted);
-    letter-spacing: var(--letter-spacing-wide);
-    text-transform: uppercase;
   }
 
   .topbar-actions {

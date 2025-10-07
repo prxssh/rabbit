@@ -4,32 +4,8 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/prxssh/rabbit/pkg/config"
 	"github.com/prxssh/rabbit/pkg/utils/bitfield"
-)
-
-// Strategy enumerates high-level peice selection policies the picker can apply.
-//
-// The current code builds the state in a strategy agnostic manner; your
-// selection method can switch on this value to implement different behaviours.
-type Strategy uint8
-
-const (
-	// StrategyRarestFirst prioritizes pieces with the lowest Availability,
-	// improving swarm health and resilience.
-	StrategyRarestFirst Strategy = iota
-
-	// StrategySequential downloads pieces in ascending index order. Great
-	// for simplicity and streaming/locality; not ideal for swarm health.
-	StrategySequential
-
-	// StrategyPriority uses a per-piece Priority field (lower = more
-	// important) to bias selection.
-	StrategyPriority
-
-	// StrategyRandomFirst randomly samples among eligible pieces (often
-	// used only for the first few pieces to reduce clumping), then hands
-	// over to another strategy.
-	StrategyRandomFirst
 )
 
 // selectSequentialPiecesToDownload implements StrategySequential.
@@ -48,15 +24,15 @@ func (pk *Picker) selectSequentialPiecesToDownload(
 		pk.nextBlock = 0
 	}
 	if pk.nextPiece >= pk.PieceCount {
-		return nil
+		return []*Request{}
 	}
 
 	ps := pk.pieces[pk.nextPiece]
 	if pk.wanted != nil && !pk.wanted[ps.index] {
-		return nil
+		return []*Request{}
 	}
 	if !bf.Has(ps.index) {
-		return nil
+		return []*Request{}
 	}
 
 	requests := make([]*Request, 0, limit)
@@ -65,7 +41,7 @@ func (pk *Picker) selectSequentialPiecesToDownload(
 	for len(requests) < limit && bi < ps.blockCount {
 		blk := ps.blocks[bi]
 		if blk.status != blockWant ||
-			blk.pendingRequests >= pk.cfg.MaxRequestsPerBlocks {
+			blk.pendingRequests >= config.Load().MaxRequestsPerBlocks {
 			bi++
 			continue
 		}
@@ -94,8 +70,8 @@ func (pk *Picker) selectRarestPiecesForDownload(
 ) []*Request {
 	requests := make([]*Request, 0, limit)
 
-	// TODO (@prxssh): replace 150 with a dynamic upper bound
-	for avail := 0; avail <= 150 && len(requests) < limit; avail++ {
+	maxAvailability := config.Load().MaxPeers
+	for avail := 0; avail <= maxAvailability && len(requests) < limit; avail++ {
 		bucket, exists := pk.availabilityBuckets[avail]
 		if !exists || len(bucket) == 0 {
 			continue
@@ -117,7 +93,7 @@ func (pk *Picker) selectRarestPiecesForDownload(
 			for bi := 0; bi < ps.blockCount && len(requests) < limit; bi++ {
 				blk := ps.blocks[bi]
 				if blk.status != blockWant ||
-					blk.pendingRequests >= pk.cfg.MaxRequestsPerBlocks {
+					blk.pendingRequests >= config.Load().MaxRequestsPerBlocks {
 					continue
 				}
 
@@ -175,7 +151,7 @@ func (pk *Picker) selectRandomFirstPiecesForDownload(
 		for bi := 0; bi < ps.blockCount && len(requests) < limit; bi++ {
 			blk := ps.blocks[bi]
 			if blk.status != blockWant ||
-				blk.pendingRequests >= pk.cfg.MaxRequestsPerBlocks {
+				blk.pendingRequests >= config.Load().MaxRequestsPerBlocks {
 				continue
 			}
 

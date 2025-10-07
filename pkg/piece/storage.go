@@ -3,6 +3,7 @@ package piece
 import (
 	"crypto/sha1"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,6 +38,7 @@ type Store struct {
 	pieceLength int64                // nominal piece length (except the final piece)
 	mu          sync.RWMutex         // protects buffers
 	buffers     map[int]*PieceBuffer // in-memory piece buffers keyed by piece index
+	log         *slog.Logger
 }
 
 // PieceBuffer holds all blocks for a piece until it’s verified.
@@ -78,7 +80,13 @@ func NewStore(
 	paths [][]string,
 	lens []int64,
 	pieceLength int64,
+	log *slog.Logger,
 ) (*Store, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("src", "piece_store")
+
 	if len(paths) != len(lens) {
 		return nil, fmt.Errorf("paths/lengths mismatch")
 	}
@@ -92,22 +100,58 @@ func NewStore(
 	)
 	root := filepath.Join(rootDir, torrentName)
 
+	log.Info(
+		"creating storage",
+		"root", root,
+		"files", len(paths),
+	)
+
 	for i := range paths {
 		rel := filepath.Join(paths[i]...)
 		fullPath := filepath.Join(root, rel)
 
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			log.Error(
+				"failed to create directory",
+				"path",
+				filepath.Dir(fullPath),
+				"error",
+				err,
+			)
 			return nil, fmt.Errorf("mkdir: %w", err)
 		}
 
 		f, err := os.OpenFile(fullPath, os.O_CREATE|os.O_RDWR, 0o644)
 		if err != nil {
+			log.Error(
+				"failed to open file",
+				"path",
+				fullPath,
+				"error",
+				err,
+			)
 			return nil, fmt.Errorf("open %s: %w", fullPath, err)
 		}
 		if err := f.Truncate(lens[i]); err != nil {
 			_ = f.Close()
+			log.Error(
+				"failed to truncate file",
+				"path",
+				fullPath,
+				"size",
+				lens[i],
+				"error",
+				err,
+			)
 			return nil, fmt.Errorf("truncate %s: %w", fullPath, err)
 		}
+
+		log.Debug(
+			"file created",
+			"path", fullPath,
+			"size", lens[i],
+			"offset", offset,
+		)
 
 		files = append(
 			files,
@@ -121,11 +165,18 @@ func NewStore(
 		offset += lens[i]
 	}
 
+	log.Info(
+		"storage initialized",
+		"total_size", offset,
+		"piece_length", pieceLength,
+	)
+
 	return &Store{
 		files:       files,
 		totalBytes:  offset,
 		pieceLength: pieceLength,
 		buffers:     make(map[int]*PieceBuffer),
+		log:         log,
 	}, nil
 }
 
@@ -210,6 +261,11 @@ func (s *Store) FlushPiece(
 	}
 
 	if sum := sha1.Sum(pieceData); sum != expectedHash {
+		s.log.Warn(
+			"piece hash mismatch",
+			"piece", pieceIdx,
+			"size", len(pieceData),
+		)
 		s.mu.Lock()
 		delete(s.buffers, pieceIdx)
 		s.mu.Unlock()
@@ -219,14 +275,27 @@ func (s *Store) FlushPiece(
 
 	pieceStart := int64(pieceIdx) * s.pieceLength
 	if err := s.writeStreamAt(pieceData, pieceStart); err != nil {
+		s.log.Error(
+			"failed to write piece",
+			"piece", pieceIdx,
+			"offset", pieceStart,
+			"size", len(pieceData),
+			"error", err,
+		)
 		return false, fmt.Errorf("write piece %d: %w", pieceIdx, err)
 	}
+
+	s.log.Debug(
+		"piece written to disk",
+		"piece", pieceIdx,
+		"size", len(pieceData),
+	)
 
 	s.mu.Lock()
 	delete(s.buffers, pieceIdx)
 	s.mu.Unlock()
 
-	return false, nil
+	return true, nil
 }
 
 // RecheckPiece reads a piece back from disk and verifies its SHA-1.

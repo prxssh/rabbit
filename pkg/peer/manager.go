@@ -8,76 +8,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prxssh/rabbit/pkg/config"
 	"github.com/prxssh/rabbit/pkg/piece"
 	"golang.org/x/sync/errgroup"
 )
-
-// Config holds peer manager configuration parameters.
-type Config struct {
-	// MaxPeers is the maximum number of concurrent peer connections
-	// allowed.
-	MaxPeers int
-
-	// MaxInflightRequestsPerPeer limits how many requests can be
-	// outstanding to a single peer at once.
-	MaxInflightRequestsPerPeer int
-
-	// MaxRequestsPerPiece caps the number of duplicate requests for the
-	// same piece across all peers to prevent over-downloading.
-	MaxRequestsPerPiece int
-
-	// PeerHeartbeatInterval is how often to send keep-alive messages to
-	// peer to maintain the connection.
-	PeerHeartbeatInterval time.Duration
-
-	// ReadTimeout is the maximum time to wait for data from a peer before
-	// considering the connection stalled.
-	ReadTimeout time.Duration
-
-	// WriteTimeout is the maximum time to wait when sending data to a peer
-	// before considering the connection stalled.
-	WriteTimeout time.Duration
-
-	// DialTimeout is the maximum time to wait when establishing a new
-	// connection to a peer.
-	DialTimeout time.Duration
-
-	// KeepAliveInterval is how often to check peer connection health and
-	// close idle connections.
-	KeepAliveInterval time.Duration
-
-	// PeerOutboundQueueBacklog is the maximum messages that peer can have
-	// in its buffer.
-	PeerOutboundQueueBacklog int
-}
-
-func DefaultConfig() Config {
-	return Config{
-		MaxPeers:                   50,
-		MaxInflightRequestsPerPeer: 5,
-		MaxRequestsPerPiece:        4,
-		PeerHeartbeatInterval:      2 * time.Minute,
-		ReadTimeout:                45 * time.Second,
-		WriteTimeout:               45 * time.Second,
-		DialTimeout:                30 * time.Second,
-		KeepAliveInterval:          2 * time.Minute,
-		PeerOutboundQueueBacklog:   25,
-	}
-}
 
 // Manager coordinates peer connections and data transfer for a single torrent.
 //
 // It handles peer discovery, connection management, block requests, and
 // integrates with the piece picker and storage layer.
 type Manager struct {
-	// cfg holds the manager's configuration parameters.
-	cfg Config
-
 	// log is the structured logger for peer management events.
 	log *slog.Logger
 
-	// peerMut protects the peers map from concurrent access.
-	peerMut sync.RWMutex
+	// peerMu protects the peers map from concurrent access.
+	peerMu sync.RWMutex
 
 	// peers maps peer addresses to their active connection state.
 	peers map[netip.AddrPort]*Peer
@@ -111,11 +56,21 @@ type Manager struct {
 	// attempts to prevent resource exhaustion and thundering herd issues.
 	dialSem chan struct{}
 
-	statsMut        sync.RWMutex
+	refillPeerQ chan<- struct{}
+
+	statsMu         sync.RWMutex
 	totalDownloaded int64
 	totalUploaded   int64
 	downloadRate    int64
 	uploadRate      int64
+
+	// rate sampling state
+	lastSampleAt   time.Time
+	lastDownloaded int64
+	lastUploaded   int64
+
+	// IPv6 backoff window if the host has no IPv6 route
+	ipv6BlockUntil time.Time
 }
 
 type Stats struct {
@@ -133,18 +88,12 @@ func NewManager(
 	pieceLength,
 	size int64,
 	pieceManager *piece.Manager,
+	refillPeerQ chan<- struct{},
 	log *slog.Logger,
-	cfg *Config,
 ) *Manager {
-	c := DefaultConfig()
-	if cfg != nil {
-		c = *cfg
-	}
-
-	log = slog.Default().With("src", "peer_manager")
+	log = log.With("src", "peer_manager")
 
 	return &Manager{
-		cfg:          c,
 		log:          log,
 		clientID:     clientID,
 		infoHash:     infoHash,
@@ -152,9 +101,10 @@ func NewManager(
 		pieceManager: pieceManager,
 		pieceLength:  pieceLength,
 		size:         size,
-		dialSem:      make(chan struct{}, c.MaxPeers>>1),
+		dialSem:      make(chan struct{}, config.Load().MaxPeers>>1),
 		peers:        make(map[netip.AddrPort]*Peer),
-		peerCh:       make(chan netip.AddrPort, c.MaxPeers),
+		peerCh:       make(chan netip.AddrPort, config.Load().MaxPeers),
+		refillPeerQ:  refillPeerQ,
 	}
 }
 
@@ -163,6 +113,8 @@ func (m *Manager) Run(ctx context.Context) error {
 
 	eg.Go(func() error { return m.processPeersLoop(ctx) })
 	eg.Go(func() error { return m.monitorPeerHeartbeat(ctx) })
+	eg.Go(func() error { return m.sampleRatesLoop(ctx) })
+	eg.Go(func() error { return m.refillPeersLoop(ctx) })
 
 	eg.Go(func() error {
 		<-ctx.Done()
@@ -175,8 +127,8 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 func (m *Manager) Stats() Stats {
-	m.statsMut.RLock()
-	defer m.statsMut.RUnlock()
+	m.statsMu.RLock()
+	defer m.statsMu.RUnlock()
 
 	peerStats := make([]PeerStats, 0, len(m.peers))
 	for _, peer := range m.peers {
@@ -201,12 +153,16 @@ func (m *Manager) Stats() Stats {
 
 func (m *Manager) AdmitPeers(peers []netip.AddrPort) {
 	for _, addr := range peers {
+		if m.havePeer(addr) {
+			continue
+		}
+
 		select {
 		case m.peerCh <- addr:
 		default:
 			m.log.Warn(
 				"peer queue full; dropping",
-				slog.String("addr", addr.String()),
+				"addr", addr.String(),
 			)
 		}
 	}
@@ -215,36 +171,15 @@ func (m *Manager) AdmitPeers(peers []netip.AddrPort) {
 // BroadcastHave sends a HAVE message for the specified piece to all connected
 // peers except the excluded peer.
 func (m *Manager) BroadcastHave(pieceIdx int, excludePeer netip.AddrPort) {
-	m.peerMut.Lock()
-	defer m.peerMut.Unlock()
+	m.peerMu.RLock()
+	defer m.peerMu.RUnlock()
 
-	count := 0
 	for addr, peer := range m.peers {
 		if addr == excludePeer {
 			continue
 		}
 
-		// Use recover to handle closed channels gracefully
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Channel was closed, peer is
-					// disconnecting
-				}
-			}()
-
-			select {
-			case peer.outq <- MessageHave(pieceIdx):
-				count++
-
-			default:
-				m.log.Warn(
-					"failed to broadcast HAVE, queue full",
-					slog.String("peer", addr.String()),
-					slog.Int("piece", pieceIdx),
-				)
-			}
-		}()
+		peer.sendHave(pieceIdx)
 	}
 }
 
@@ -262,7 +197,7 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 			}
 
 			if m.havePeer(addr) ||
-				m.peerCount() >= m.cfg.MaxPeers {
+				m.peerCount() >= config.Load().MaxPeers {
 				continue
 			}
 
@@ -277,7 +212,7 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 
 				dctx, cancel := context.WithTimeout(
 					ctx,
-					m.cfg.DialTimeout,
+					config.Load().DialTimeout,
 				)
 				defer cancel()
 
@@ -292,8 +227,8 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 				}
 
 				if m.havePeer(addr) ||
-					m.peerCount() >= m.cfg.MaxPeers {
-					_ = peer.cleanup()
+					m.peerCount() >= config.Load().MaxPeers {
+					peer.cleanup()
 					return
 				}
 
@@ -306,30 +241,30 @@ func (m *Manager) processPeersLoop(ctx context.Context) error {
 }
 
 func (m *Manager) havePeer(addr netip.AddrPort) bool {
-	m.peerMut.RLock()
-	defer m.peerMut.RUnlock()
+	m.peerMu.RLock()
+	defer m.peerMu.RUnlock()
 
 	_, ok := m.peers[addr]
 	return ok
 }
 
 func (m *Manager) peerCount() int {
-	m.peerMut.RLock()
-	defer m.peerMut.RUnlock()
+	m.peerMu.RLock()
+	defer m.peerMu.RUnlock()
 
 	return len(m.peers)
 }
 
 func (m *Manager) peerAdd(addr netip.AddrPort, peer *Peer) {
-	m.peerMut.Lock()
-	defer m.peerMut.Unlock()
+	m.peerMu.Lock()
+	defer m.peerMu.Unlock()
 
 	m.peers[addr] = peer
 }
 
 func (m *Manager) removePeer(addr netip.AddrPort) {
-	m.peerMut.Lock()
-	defer m.peerMut.Unlock()
+	m.peerMu.Lock()
+	defer m.peerMu.Unlock()
 
 	delete(m.peers, addr)
 }
@@ -356,13 +291,17 @@ func (m *Manager) monitorPeerHeartbeat(ctx context.Context) error {
 func (m *Manager) purgeInactivePeers() int {
 	count := 0
 
-	m.peerMut.Lock()
-	defer m.peerMut.Unlock()
+	m.peerMu.Lock()
+	defer m.peerMu.Unlock()
 
 	for addr, peer := range m.peers {
-		if time.Since(peer.lastActiveAt) < m.cfg.KeepAliveInterval {
+		if time.Since(
+			peer.LastActiveAt(),
+		) < config.Load().KeepAliveInterval {
 			continue
 		}
+
+		peer.cleanup()
 		delete(m.peers, addr)
 		count++
 	}
@@ -373,39 +312,97 @@ func (m *Manager) purgeInactivePeers() int {
 func (m *Manager) cleanup() {
 	peers := make([]*Peer, 0, len(m.peers))
 
-	m.peerMut.Lock()
+	m.peerMu.Lock()
 	for _, peer := range m.peers {
 		peers = append(peers, peer)
 	}
-	m.peerMut.Unlock()
+	m.peerMu.Unlock()
 
 	var wg sync.WaitGroup
 	for _, peer := range peers {
 		wg.Add(1)
 		go func(p *Peer) {
 			defer wg.Done()
-			if err := p.cleanup(); err != nil {
-				m.log.Warn(
-					"failed to close peer",
-					"addr", p.addr.String(),
-					"error", err.Error(),
-				)
-			}
+			p.cleanup()
 		}(peer)
 	}
 	wg.Wait()
+
+	m.peerMu.Lock()
+	m.peers = make(map[netip.AddrPort]*Peer)
+	m.peerMu.Unlock()
 }
 
 func (m *Manager) updateTotalDownloaded(size int) {
-	m.statsMut.Lock()
-	defer m.statsMut.Unlock()
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
 
 	m.totalDownloaded += int64(size)
 }
 
 func (m *Manager) updateTotalUploaded(size int) {
-	m.statsMut.Lock()
-	defer m.statsMut.Unlock()
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
 
 	m.totalUploaded += int64(size)
+}
+
+// sampleRatesLoop periodically computes aggregate download/upload rates based
+// on
+// byte deltas over time and stores them in the manager under a lock. This keeps
+// Stats.DownloadRate/UploadRate fresh for the UI.
+func (m *Manager) sampleRatesLoop(ctx context.Context) error {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	// initialize sampling baseline
+	m.statsMu.Lock()
+	m.lastSampleAt = time.Now()
+	m.lastDownloaded = m.totalDownloaded
+	m.lastUploaded = m.totalUploaded
+	m.statsMu.Unlock()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case now := <-ticker.C:
+			m.statsMu.Lock()
+			elapsed := now.Sub(m.lastSampleAt).Seconds()
+			if elapsed <= 0 {
+				// avoid div-by-zero; skip this tick
+				m.statsMu.Unlock()
+				continue
+			}
+
+			dDelta := m.totalDownloaded - m.lastDownloaded
+			uDelta := m.totalUploaded - m.lastUploaded
+
+			m.downloadRate = int64(float64(dDelta) / elapsed)
+			m.uploadRate = int64(float64(uDelta) / elapsed)
+
+			m.lastDownloaded = m.totalDownloaded
+			m.lastUploaded = m.totalUploaded
+			m.lastSampleAt = now
+			m.statsMu.Unlock()
+		}
+	}
+}
+
+func (m *Manager) refillPeersLoop(ctx context.Context) error {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if m.peerCount() >= 5 {
+				continue
+			}
+
+			m.refillPeerQ <- struct{}{}
+		}
+	}
 }

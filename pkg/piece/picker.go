@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prxssh/rabbit/pkg/config"
 	"github.com/prxssh/rabbit/pkg/utils/bitfield"
 )
 
@@ -24,10 +25,9 @@ type Cancel struct {
 // per-peer pipeline capacity (if you want the peer to limit itself). If you
 // centralize capacity in the picker, Capacity can be ignored by NextForPeer.
 type PeerView struct {
-	Peer      netip.AddrPort    // the candidate peer
-	Has       bitfield.Bitfield // peer's current bitfield
-	Unchoked  bool              // must be true to issue requests
-	Pipelined int               // number of pieces to return
+	Peer     netip.AddrPort    // the candidate peer
+	Has      bitfield.Bitfield // peer's current bitfield
+	Unchoked bool              // must be true to issue requests
 }
 
 // Request is a concrete plan for a single block request the writer can send.
@@ -38,42 +38,6 @@ type Request struct {
 	Piece  int            // piece index
 	Begin  int            // byte offset inside the piece
 	Length int            // block length
-}
-
-// Config captures picker-wide knobs that selection logic and timers use.
-type PickerConfig struct {
-	// DownloadStrategy chooses how to rank eligible pieces (see Strategy).
-	DownloadStrategy Strategy
-
-	// MaxInflightRequests is the per-peer cap the picker should respect
-	// when handing out requests to a single connection. The picker
-	// doesn’t enforce per-peer counters by itself — your peer loop
-	// should pass a view (capacity) and the picker should not exceed it.
-	MaxInflightRequests int
-
-	// RequestTimeout is the baseline time after which an in-flight block
-	// can be considered timed-out and re-assigned. You can adapt it
-	// per-peer using RTT.
-	RequestTimeout time.Duration
-
-	// EndgameDupPerBlock, when Endgame is enabled, caps the number of
-	// duplicate owners (peers concurrently fetching the same block).
-	EndgameDupPerBlock int
-
-	// MaxRequestsPerBlocks limit how many duplicate blocks can be requested
-	// from a single piece at once, preventing over-downloading of
-	// individual blocks.
-	MaxRequestsPerBlocks int
-}
-
-func DefaultPickerConfig() PickerConfig {
-	return PickerConfig{
-		DownloadStrategy:     StrategySequential,
-		MaxInflightRequests:  20,
-		RequestTimeout:       30 * time.Second,
-		EndgameDupPerBlock:   2,
-		MaxRequestsPerBlocks: 4,
-	}
 }
 
 // PieceState represents the download state of a piece
@@ -116,9 +80,6 @@ type Picker struct {
 
 	// PieceCount = len(Pieces).
 	PieceCount int
-
-	// Cfg holds picker configuration.
-	cfg PickerConfig
 
 	// pieces is the complete set of per-piece states, indexed by piece
 	// index.
@@ -173,19 +134,17 @@ type Picker struct {
 	// bitfield caches which pieces are verified. Updated whenever
 	// MarkPieceVerified is called.
 	bitfield bitfield.Bitfield
+
+	// piecesInTransit keeps track of the number of pieces that we're
+	// currently downloading. This is helpful in implementing backpressure.
+	piecesInTransit int
 }
 
 func NewPicker(
 	torrentSize, pieceLength int64,
 	pieceHashes [][sha1.Size]byte,
-	cfg *PickerConfig,
 ) *Picker {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	c := DefaultPickerConfig()
-	if cfg != nil {
-		c = *cfg
-	}
 
 	n, totalBlocks := len(pieceHashes), 0
 	pieces := make([]*pieceState, n)
@@ -226,7 +185,6 @@ func NewPicker(
 	}
 
 	return &Picker{
-		cfg:                  c,
 		PieceCount:           n,
 		pieces:               pieces,
 		LastPieceLen:         lastPieceLen,
@@ -246,7 +204,7 @@ func NewPicker(
 
 func (pk *Picker) Bitfield() bitfield.Bitfield {
 	pk.mu.RLock()
-	pk.mu.RUnlock()
+	defer pk.mu.RUnlock()
 
 	return pk.bitfield
 }
@@ -270,6 +228,7 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
 	if len(keys) == 0 {
 		delete(pk.peerBlockAssignments, peer)
 		delete(pk.peerInflightCount, peer)
+
 		return
 	}
 
@@ -286,9 +245,10 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
 		}
 		delete(ps.blocks[blockIdx].owners, peer)
 
-		if ps.blocks[blockIdx].status == blockInflight &&
-			len(ps.blocks[blockIdx].owners) == 0 {
-			ps.blocks[blockIdx].status = blockWant
+		block := ps.blocks[blockIdx]
+
+		if block.status == blockInflight && len(block.owners) == 0 {
+			block.status = blockWant
 			if pieceIdx == pk.nextPiece && blockIdx < pk.nextBlock {
 				pk.nextBlock = blockIdx
 			}
@@ -320,26 +280,43 @@ func (pk *Picker) OnBlockReceived(
 	}
 
 	var cancels []Cancel
+	key := packKey(pieceIdx, bi)
+	freedSelf := false
 
-	for other := range ps.blocks[bi].owners {
-		if other != peer {
+	for owner := range ps.blocks[bi].owners {
+		if owner != peer {
 			cancels = append(
 				cancels,
 				Cancel{
-					Peer:  other,
+					Peer:  owner,
 					Piece: pieceIdx,
 					Begin: begin,
 				},
 			)
+		} else {
+			freedSelf = true
 		}
 
-		delete(pk.peerBlockAssignments[other], packKey(pieceIdx, bi))
-		pk.peerInflightCount[other]--
-		if pk.peerInflightCount[other] < 0 {
-			pk.peerInflightCount[other] = 0
+		// Remove reverse index and free inflight capacity for every
+		// owner
+		delete(pk.peerBlockAssignments[owner], key)
+		pk.peerInflightCount[owner]--
+		if pk.peerInflightCount[owner] < 0 {
+			pk.peerInflightCount[owner] = 0
+		}
+	}
+
+	// Defensive: if the delivering peer wasn't recorded as an owner for any
+	// reason, ensure we still free its reverse index and inflight capacity.
+	if !freedSelf {
+		delete(pk.peerBlockAssignments[peer], key)
+		pk.peerInflightCount[peer]--
+		if pk.peerInflightCount[peer] < 0 {
+			pk.peerInflightCount[peer] = 0
 		}
 	}
 	ps.blocks[bi].owners = make(map[netip.AddrPort]*ownerMeta)
+	ps.blocks[bi].pendingRequests = 0
 
 	if ps.blocks[bi].status != blockDone {
 		ps.blocks[bi].status = blockDone
@@ -354,6 +331,8 @@ func (pk *Picker) OnBlockReceived(
 // respecting its unchoked state and per-peer pipeline limit. It also registers
 // ownership (peer→block) when a request is issued.
 func (pk *Picker) NextForPeer(pv *PeerView) []*Request {
+	cfg := config.Load()
+
 	if !pv.Unchoked {
 		return nil
 	}
@@ -361,27 +340,32 @@ func (pk *Picker) NextForPeer(pv *PeerView) []*Request {
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
 
-	limit := pk.cfg.MaxInflightRequests - pv.Pipelined
-	if limit < 0 {
-		limit = 0
+	if pk.piecesInTransit >= cfg.MaxInflightRequests {
+		return []*Request{}
+	}
+	limit := cfg.MaxInflightRequests - pk.piecesInTransit
+
+	var reqs []*Request
+
+	switch config.Load().PieceDownloadStrategy {
+	case config.PieceDownloadStrategySequential:
+		reqs = pk.selectSequentialPiecesToDownload(
+			pv.Peer,
+			pv.Has,
+			limit,
+		)
+	case config.PieceDownloadStrategyRarestFirst:
+		reqs = pk.selectRarestPiecesForDownload(pv.Peer, pv.Has, limit)
+	default:
+		reqs = pk.selectRandomFirstPiecesForDownload(
+			pv.Peer,
+			pv.Has,
+			limit,
+		)
 	}
 
-	switch pk.cfg.DownloadStrategy {
-	case StrategySequential:
-		return pk.selectSequentialPiecesToDownload(
-			pv.Peer,
-			pv.Has,
-			limit,
-		)
-	case StrategyRarestFirst:
-		return pk.selectRarestPiecesForDownload(pv.Peer, pv.Has, limit)
-	default:
-		return pk.selectRandomFirstPiecesForDownload(
-			pv.Peer,
-			pv.Has,
-			limit,
-		)
-	}
+	pk.piecesInTransit += len(reqs)
+	return reqs
 }
 
 // OnTimeout reclaims a single block for a given peer if they owned it. If no
@@ -432,7 +416,6 @@ func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
 
 	for i := 0; i < pk.PieceCount; i++ {
 		if !bf.Has(i) {
-			continue
 		}
 
 		pk.updatePieceAvailability(i, 1)

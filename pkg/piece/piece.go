@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/netip"
 	"time"
+
+	"github.com/prxssh/rabbit/pkg/config"
 )
 
 // PieceCount returns how many pieces are needed to cover totalSize bytes, given
@@ -299,7 +301,9 @@ func (pk *Picker) CapacityForPeer(peer netip.AddrPort) int {
 	pk.mu.RLock()
 	defer pk.mu.RUnlock()
 
-	left := pk.cfg.MaxInflightRequests - len(pk.peerBlockAssignments[peer])
+	left := config.Load().MaxInflightRequests - len(
+		pk.peerBlockAssignments[peer],
+	)
 	if left < 0 {
 		return 0
 	}
@@ -308,18 +312,11 @@ func (pk *Picker) CapacityForPeer(peer netip.AddrPort) int {
 
 // MarkPieceVerified stamps the current sequential piece as verified on success,
 // or resets its blocks to WANT on failure (so it is re-downloaded).
-func (pk *Picker) MarkPieceVerified(ok bool) {
+func (pk *Picker) MarkPieceVerified(idx int, ok bool) {
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
 
-	idx := -1
-	for i := 0; i < pk.PieceCount; i++ {
-		if !pk.pieces[i].verified {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
+	if idx < 0 || idx >= pk.PieceCount {
 		return
 	}
 

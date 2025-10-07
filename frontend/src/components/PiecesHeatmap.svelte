@@ -94,6 +94,7 @@
     const style = getComputedStyle(canvas)
     const completedColor = style.getPropertyValue('--color-success') || '#10b981'
     const notStartedColor = style.getPropertyValue('--color-bg-secondary') || '#374151'
+    const inProgressColor = style.getPropertyValue('--color-accent') || '#3b82f6'
 
     if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
       canvas.width = canvasWidth
@@ -109,16 +110,16 @@
       const y = row * (cellSize + gap)
       const state = pieceStates[i] || 0
 
-      switch (state) {
-        case 2: // completed - solid green
-          ctx.fillStyle = completedColor
-          break
-        case 1: // in progress - blinking green
-          const rgb = hexToRgb(completedColor)
-          ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${blinkOpacity})`
-          break
-        default: // not started - gray
-          ctx.fillStyle = notStartedColor
+      if (state === 2) {
+        // completed - solid green
+        ctx.fillStyle = completedColor
+      } else if (state === 1) {
+        // in progress - distinct blinking color (amber/orange)
+        const rgb = hexToRgb(inProgressColor)
+        ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${blinkOpacity})`
+      } else {
+        // not started - gray
+        ctx.fillStyle = notStartedColor
       }
 
       ctx.fillRect(x, y, cellSize, cellSize)
@@ -344,7 +345,7 @@
   }
 
   .legend-color.in-progress {
-    background-color: var(--color-success);
+    background-color: var(--color-accent, #3b82f6);
     animation: blink 1s ease-in-out infinite;
   }
 

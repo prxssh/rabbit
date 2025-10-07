@@ -1,7 +1,7 @@
 <script lang="ts">
-  import {AddTorrent, GetTorrentStats, RemoveTorrent} from '../wailsjs/go/torrent/Client.js'
+  import {AddTorrent, GetTorrentStats, RemoveTorrent, GetConfig, UpdateConfig} from '../wailsjs/go/torrent/Client.js'
   import type {torrent, peer} from '../wailsjs/go/models'
-  import {onDestroy} from 'svelte'
+  import {onDestroy, onMount} from 'svelte'
   import TopBar from './components/TopBar.svelte'
   import StatusBar from './components/StatusBar.svelte'
   import TorrentItem from './components/TorrentItem.svelte'
@@ -23,24 +23,20 @@
   let showSettingsDialog = false
   let pendingFile: File | null = null
   let defaultDownloadPath = ''
+  let totalDownloadRate = 0
+  let totalUploadRate = 0
 
-  // Load default download path from localStorage
-  if (typeof window !== 'undefined') {
-    defaultDownloadPath = localStorage.getItem('defaultDownloadPath') || ''
-  }
-
-  function openSettings() {
-    showSettingsDialog = true
-  }
-
-  function saveSettings(path: string) {
-    defaultDownloadPath = path
-    if (path) {
-      localStorage.setItem('defaultDownloadPath', path)
-    } else {
-      localStorage.removeItem('defaultDownloadPath')
+  onMount(async () => {
+    // Load default download path from config
+    try {
+      const cfg = await GetConfig()
+      if (cfg) {
+        defaultDownloadPath = cfg.DefaultDownloadDir
+      }
+    } catch (error) {
+      console.error('Failed to load config:', error)
     }
-  }
+  })
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault()
@@ -111,6 +107,8 @@
   }
 
   async function updateAllTorrentsStats() {
+    let aggDownload = 0
+    let aggUpload = 0
     const updatedTorrents = await Promise.all(
       torrents.map(async (torrent) => {
         if (torrent.torrentData?.metainfo?.info?.hash) {
@@ -121,12 +119,25 @@
               // Update peers and piece states if this is the selected torrent
               if (selectedTorrentId === torrent.id) {
                 peers = stats.peers || []
-                pieceStates = stats.pieceStates || []
+                // Force a new array reference to trigger Svelte reactivity
+                pieceStates = (stats.pieceStates || []).slice()
+              }
+
+              // Track aggregate rates
+              aggDownload += stats.downloadRate || 0
+              aggUpload += stats.uploadRate || 0
+
+              // Align progress with PieceHeatmap: percent of completed pieces
+              let progressPercent = stats.progress
+              const totalPieces = torrent.torrentData?.metainfo?.info?.pieces?.length || 0
+              if (Array.isArray(stats.pieceStates) && totalPieces > 0) {
+                const completed = stats.pieceStates.filter((s: number) => s === 2).length
+                progressPercent = (completed / totalPieces) * 100
               }
 
               return {
                 ...torrent,
-                progress: stats.progress,
+                progress: progressPercent,
                 downloadSpeed: formatBytesPerSec(stats.downloadRate),
                 uploadSpeed: formatBytesPerSec(stats.uploadRate)
               }
@@ -139,6 +150,8 @@
       })
     )
     torrents = updatedTorrents
+    totalDownloadRate = aggDownload
+    totalUploadRate = aggUpload
   }
 
   async function uploadTorrent(file: File, downloadPath: string) {
@@ -168,15 +181,23 @@
     }
   }
 
-  function handleAddDialogConfirm(downloadPath: string, remember: boolean) {
+  async function handleAddDialogConfirm(downloadPath: string, remember: boolean) {
     if (pendingFile) {
       uploadTorrent(pendingFile, downloadPath)
       pendingFile = null
 
-      // Save to localStorage if user checked "Remember this location"
+      // Update config if user checked "Remember this location"
       if (remember) {
         defaultDownloadPath = downloadPath
-        localStorage.setItem('defaultDownloadPath', downloadPath)
+        try {
+          const cfg = await GetConfig()
+          if (cfg) {
+            cfg.DefaultDownloadDir = downloadPath
+            await UpdateConfig(cfg)
+          }
+        } catch (error) {
+          console.error('Failed to update config:', error)
+        }
       }
     }
     showAddDialog = false
@@ -221,6 +242,24 @@
     fileInput.click()
   }
 
+  function openSettingsDialog() {
+    showSettingsDialog = true
+  }
+
+  async function closeSettingsDialog() {
+    showSettingsDialog = false
+
+    // Reload config to get updated default download path
+    try {
+      const cfg = await GetConfig()
+      if (cfg) {
+        defaultDownloadPath = cfg.DefaultDownloadDir
+      }
+    } catch (error) {
+      console.error('Failed to reload config:', error)
+    }
+  }
+
   $: selectedTorrent = torrents.find(t => t.id === selectedTorrentId)
 
   // Clear peers and piece states when selection changes to null
@@ -257,7 +296,9 @@
   <TopBar
     torrentCount={torrents.length}
     onAddTorrent={openFileDialog}
-    onSettings={openSettings}
+    onOpenSettings={openSettingsDialog}
+    downloadSpeed={formatBytesPerSec(totalDownloadRate)}
+    uploadSpeed={formatBytesPerSec(totalUploadRate)}
   />
 
   <div class="content">
@@ -316,9 +357,7 @@
 
   <SettingsDialog
     show={showSettingsDialog}
-    defaultPath={defaultDownloadPath}
-    onSave={saveSettings}
-    onClose={() => showSettingsDialog = false}
+    onClose={closeSettingsDialog}
   />
 </main>
 
