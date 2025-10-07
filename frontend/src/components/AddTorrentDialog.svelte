@@ -1,5 +1,7 @@
 <script lang="ts">
   import {SelectDownloadDirectory} from '../../wailsjs/go/torrent/Client.js'
+  import Modal from './ui/Modal.svelte'
+  import Button from './ui/Button.svelte'
 
   export let show = false
   export let selectedFile: File | null = null
@@ -43,151 +45,74 @@
     rememberLocation = false
     onCancel()
   }
-
-  function handleBackdropClick(e: MouseEvent) {
-    if (e.target === e.currentTarget) {
-      handleCancel()
-    }
-  }
 </script>
 
-{#if show}
-  <div class="modal-backdrop" on:click={handleBackdropClick}>
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Add Torrent</h2>
-        <button class="close-btn" on:click={handleCancel}>×</button>
-      </div>
+<Modal {show} title="Add Torrent" onClose={handleCancel} maxWidth="500px">
+  <div class="content">
+    <div class="field">
+      <label>Torrent File</label>
+      <div class="file-name">{selectedFile?.name || 'No file selected'}</div>
+    </div>
 
-      <div class="modal-body">
-        <div class="field">
-          <label>Torrent File:</label>
-          <div class="file-name">{selectedFile?.name || 'No file selected'}</div>
-        </div>
-
-        <div class="field">
-          <label>Download Location:</label>
-          <div class="path-selector">
-            <input
-              type="text"
-              readonly
-              value={downloadPath || 'Click browse to select...'}
-              class="path-input"
-            />
-            <button
-              class="browse-btn"
-              on:click={selectDirectory}
-              disabled={isSelectingPath}
-            >
-              {isSelectingPath ? 'Selecting...' : 'Browse'}
-            </button>
-          </div>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={rememberLocation} />
-            <span>Remember this location</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="modal-footer">
-        <button class="btn btn-secondary" on:click={handleCancel}>Cancel</button>
-        <button
-          class="btn btn-primary"
-          on:click={handleConfirm}
-          disabled={!downloadPath}
+    <div class="field">
+      <label>Download Location</label>
+      <div class="path-selector">
+        <input
+          type="text"
+          readonly
+          value={downloadPath || 'Click browse to select...'}
+          class="path-input"
+        />
+        <Button
+          variant="secondary"
+          disabled={isSelectingPath}
+          on:click={selectDirectory}
         >
-          Add Torrent
-        </button>
+          {isSelectingPath ? 'Selecting...' : 'Browse'}
+        </Button>
       </div>
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={rememberLocation} />
+        <span>Remember this location</span>
+      </label>
     </div>
   </div>
-{/if}
+
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={handleCancel}>Cancel</Button>
+    <Button variant="primary" disabled={!downloadPath} on:click={handleConfirm}>
+      Add Torrent
+    </Button>
+  </svelte:fragment>
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal {
-    background-color: var(--color-bg-primary);
-    border-radius: 8px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-    width: 90%;
-    max-width: 500px;
-    max-height: 90vh;
-    overflow: hidden;
+  .content {
     display: flex;
     flex-direction: column;
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-4);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .modal-header h2 {
-    margin: 0;
-    font-size: var(--font-size-xl);
-    color: var(--color-text-primary);
-  }
-
-  .close-btn {
-    background: none;
-    border: none;
-    color: var(--color-text-tertiary);
-    font-size: 28px;
-    cursor: pointer;
-    padding: 0;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    transition: all 0.2s;
-  }
-
-  .close-btn:hover {
-    background-color: var(--color-bg-hover);
-    color: var(--color-text-primary);
-  }
-
-  .modal-body {
-    padding: var(--spacing-6);
-    overflow-y: auto;
-    flex: 1;
+    gap: var(--spacing-4);
   }
 
   .field {
-    margin-bottom: var(--spacing-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-2);
   }
 
   .field label {
-    display: block;
-    margin-bottom: var(--spacing-2);
-    color: var(--color-text-secondary);
     font-size: var(--font-size-sm);
-    font-weight: 500;
+    color: var(--color-text-secondary);
+    font-weight: var(--font-weight-medium);
   }
 
   .file-name {
     padding: var(--spacing-3);
-    background-color: var(--color-bg-secondary);
-    border-radius: 4px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-primary);
+    border-radius: var(--radius-sm);
     color: var(--color-text-primary);
-    font-family: monospace;
+    font-size: var(--font-size-sm);
+    font-family: var(--font-family-mono);
   }
 
   .path-selector {
@@ -198,40 +123,19 @@
   .path-input {
     flex: 1;
     padding: var(--spacing-3);
-    background-color: var(--color-bg-secondary);
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    color: var(--color-text-primary);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-primary);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
     font-size: var(--font-size-sm);
-  }
-
-  .browse-btn {
-    padding: var(--spacing-3) var(--spacing-4);
-    background-color: var(--color-bg-secondary);
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    color: var(--color-text-primary);
-    cursor: pointer;
-    font-size: var(--font-size-sm);
-    transition: all 0.2s;
-    white-space: nowrap;
-  }
-
-  .browse-btn:hover:not(:disabled) {
-    background-color: var(--color-bg-hover);
-    border-color: var(--color-primary);
-  }
-
-  .browse-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+    font-family: var(--font-family-base);
   }
 
   .checkbox-label {
     display: flex;
     align-items: center;
     gap: var(--spacing-2);
-    margin-top: var(--spacing-3);
+    margin-top: var(--spacing-1);
     cursor: pointer;
     font-size: var(--font-size-sm);
   }
@@ -244,46 +148,5 @@
 
   .checkbox-label span {
     color: var(--color-text-secondary);
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--spacing-3);
-    padding: var(--spacing-4);
-    border-top: 1px solid var(--color-border);
-  }
-
-  .btn {
-    padding: var(--spacing-3) var(--spacing-5);
-    border-radius: 4px;
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    border: none;
-  }
-
-  .btn-secondary {
-    background-color: var(--color-bg-secondary);
-    color: var(--color-text-primary);
-  }
-
-  .btn-secondary:hover {
-    background-color: var(--color-bg-hover);
-  }
-
-  .btn-primary {
-    background-color: var(--color-primary);
-    color: white;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background-color: var(--color-primary-hover);
-  }
-
-  .btn-primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

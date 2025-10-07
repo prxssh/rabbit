@@ -2,6 +2,8 @@
   import {GetConfig, UpdateConfig, SelectDownloadDirectory} from '../../wailsjs/go/torrent/Client.js'
   import type {config} from '../../wailsjs/go/models'
   import {onMount} from 'svelte'
+  import Modal from './ui/Modal.svelte'
+  import Button from './ui/Button.svelte'
 
   export let show = false
   export let onClose: () => void
@@ -149,18 +151,11 @@
   }
 </script>
 
-{#if show}
-  <div class="modal-overlay" on:click={handleCancel}>
-    <div class="modal-content" on:click|stopPropagation>
-      <div class="modal-header">
-        <h2>Settings</h2>
-        <button class="close-btn" on:click={handleCancel}>&times;</button>
-      </div>
-
-      {#if loading}
-        <div class="loading">Loading settings...</div>
-      {:else}
-        <div class="modal-body">
+<Modal {show} title="Settings" {onClose}>
+  {#if loading}
+    <div class="loading">Loading settings...</div>
+  {:else}
+    <div class="settings-content">
           <div class="settings-section">
             <h3>General</h3>
 
@@ -174,9 +169,9 @@
                   readonly
                   placeholder="Select a directory..."
                 />
-                <button class="browse-btn" on:click={selectDirectory}>
+                <Button variant="secondary" on:click={selectDirectory}>
                   Browse
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -286,85 +281,21 @@
             </div>
           </div>
 
-          {#if saveStatus}
-            <div class="save-status" class:error={saveStatus !== 'Saving...' && saveStatus !== 'Settings saved successfully!'}>
-              {saveStatus}
-            </div>
-          {/if}
-        </div>
-
-        <div class="modal-footer">
-          <button class="cancel-btn" on:click={handleCancel}>Cancel</button>
-          <button class="save-btn" on:click={saveSettings}>Save</button>
+      {#if saveStatus}
+        <div class="save-status" class:error={saveStatus !== 'Saving...' && saveStatus !== 'Settings saved successfully!'}>
+          {saveStatus}
         </div>
       {/if}
     </div>
-  </div>
-{/if}
+  {/if}
+
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={handleCancel}>Cancel</Button>
+    <Button variant="primary" on:click={saveSettings}>Save</Button>
+  </svelte:fragment>
+</Modal>
 
 <style>
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal-content {
-    background: var(--color-bg-primary);
-    border: 1px solid var(--color-border-secondary);
-    border-radius: var(--radius-base);
-    width: 90%;
-    max-width: 600px;
-    max-height: 85vh;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--spacing-4) var(--spacing-5);
-    border-bottom: 1px solid var(--color-border-primary);
-  }
-
-  .modal-header h2 {
-    margin: 0;
-    font-size: var(--font-size-lg);
-    font-weight: var(--font-weight-medium);
-    color: var(--color-text-primary);
-  }
-
-  .close-btn {
-    background: transparent;
-    border: 1px solid var(--color-border-tertiary);
-    font-size: 20px;
-    color: var(--color-text-disabled);
-    cursor: pointer;
-    line-height: 1;
-    padding: 0;
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-sm);
-    transition: all var(--transition-base);
-  }
-
-  .close-btn:hover {
-    background: var(--color-bg-hover);
-    border-color: var(--color-border-hover);
-    color: var(--color-text-secondary);
-  }
-
   .loading {
     padding: var(--spacing-8);
     text-align: center;
@@ -372,10 +303,10 @@
     font-size: var(--font-size-sm);
   }
 
-  .modal-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--spacing-5);
+  .settings-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-5);
   }
 
   .settings-section {
@@ -443,23 +374,6 @@
     flex: 1;
   }
 
-  .browse-btn {
-    padding: var(--spacing-2) var(--spacing-3);
-    background: var(--color-bg-tertiary);
-    color: var(--color-text-primary);
-    border: 1px solid var(--color-border-tertiary);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--font-size-sm);
-    font-family: var(--font-family-base);
-    white-space: nowrap;
-    transition: all var(--transition-base);
-  }
-
-  .browse-btn:hover {
-    background: var(--color-bg-hover);
-    border-color: var(--color-border-hover);
-  }
 
   .hint {
     display: block;
@@ -536,44 +450,5 @@
     background: var(--color-error-bg);
     border-color: var(--color-error-border);
     color: var(--color-error);
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--spacing-2);
-    padding: var(--spacing-4) var(--spacing-5);
-    border-top: 1px solid var(--color-border-primary);
-  }
-
-  .cancel-btn,
-  .save-btn {
-    padding: var(--spacing-2) var(--spacing-4);
-    border: 1px solid var(--color-border-tertiary);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--font-size-sm);
-    font-family: var(--font-family-base);
-    transition: all var(--transition-base);
-  }
-
-  .cancel-btn {
-    background: transparent;
-    color: var(--color-text-secondary);
-  }
-
-  .cancel-btn:hover {
-    background: var(--color-bg-hover);
-    border-color: var(--color-border-hover);
-  }
-
-  .save-btn {
-    background: var(--color-bg-tertiary);
-    color: var(--color-text-primary);
-  }
-
-  .save-btn:hover {
-    background: var(--color-bg-hover);
-    border-color: var(--color-border-hover);
   }
 </style>
