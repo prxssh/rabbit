@@ -72,12 +72,12 @@ func (pk *Picker) selectRarestPiecesForDownload(
 
 	maxAvailability := config.Load().MaxPeers
 	for avail := 0; avail <= maxAvailability && len(requests) < limit; avail++ {
-		bucket, exists := pk.availabilityBuckets[avail]
-		if !exists || len(bucket) == 0 {
+		bucket := pk.availability.Bucket(avail)
+		if len(bucket) == 0 {
 			continue
 		}
 
-		for pieceIdx := range bucket {
+		for _, pieceIdx := range bucket {
 			if len(requests) >= limit {
 				break
 			}

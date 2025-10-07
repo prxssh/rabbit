@@ -82,9 +82,6 @@ func NewStore(
 	pieceLength int64,
 	log *slog.Logger,
 ) (*Store, error) {
-	if log == nil {
-		log = slog.Default()
-	}
 	log = log.With("src", "piece_store")
 
 	if len(paths) != len(lens) {
@@ -113,10 +110,8 @@ func NewStore(
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 			log.Error(
 				"failed to create directory",
-				"path",
-				filepath.Dir(fullPath),
-				"error",
-				err,
+				"path", filepath.Dir(fullPath),
+				"error", err,
 			)
 			return nil, fmt.Errorf("mkdir: %w", err)
 		}
@@ -125,10 +120,8 @@ func NewStore(
 		if err != nil {
 			log.Error(
 				"failed to open file",
-				"path",
-				fullPath,
-				"error",
-				err,
+				"path", fullPath,
+				"error", err,
 			)
 			return nil, fmt.Errorf("open %s: %w", fullPath, err)
 		}
@@ -136,12 +129,9 @@ func NewStore(
 			_ = f.Close()
 			log.Error(
 				"failed to truncate file",
-				"path",
-				fullPath,
-				"size",
-				lens[i],
-				"error",
-				err,
+				"path", fullPath,
+				"size", lens[i],
+				"error", err,
 			)
 			return nil, fmt.Errorf("truncate %s: %w", fullPath, err)
 		}
@@ -360,6 +350,7 @@ func (s *Store) writeStreamAt(p []byte, streamOff int64) error {
 		}
 		// no overlap (buffer starts after this file ends)
 		if streamOff >= f.Offset+f.Length {
+			continue
 		}
 
 		// overlap bounds within file
@@ -404,6 +395,7 @@ func (s *Store) readStreamAt(p []byte, streamOff int64) error {
 		}
 		// no overlap (buffer starts after this file ends)
 		if streamOff >= f.Offset+f.Length {
+			continue
 		}
 
 		// overlap bounds within file
@@ -420,7 +412,7 @@ func (s *Store) readStreamAt(p []byte, streamOff int64) error {
 
 		if _, err := f.f.ReadAt(p[pStart:pEnd], fileOff); err != nil {
 			return fmt.Errorf(
-				"write %s@%d: %w",
+				"read %s@%d: %w",
 				f.Path,
 				fileOff,
 				err,

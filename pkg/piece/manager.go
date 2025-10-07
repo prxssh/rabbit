@@ -141,6 +141,10 @@ func (m *Manager) NextForPeer(pv *PeerView) []*Request {
 	return m.picker.NextForPeer(pv)
 }
 
+func (m *Manager) HasAnyWantedPiece(bf bitfield.Bitfield) bool {
+	return m.picker.HasAnyWantedPiece(bf)
+}
+
 func (m *Manager) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
 	m.log.Debug(
 		"peer disconnected",

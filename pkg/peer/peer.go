@@ -414,12 +414,7 @@ func (p *Peer) shouldBeInterested() bool {
 		return false
 	}
 
-	idx, ok := p.m.pieceManager.CurrentPieceIndex()
-	if !ok {
-		return false
-	}
-
-	return p.bf.Has(idx)
+	return p.m.pieceManager.HasAnyWantedPiece(p.bf)
 }
 
 func (p *Peer) sendHave(pieceIdx int) {

@@ -86,12 +86,7 @@ func BlockCountForPiece(pieceLen, blockLen int) int {
 		return 0
 	}
 
-	n := pieceLen / blockLen
-	if pieceLen%blockLen != 0 {
-		n++
-	}
-
-	return n
+	return (blockLen + pieceLen - 1) / blockLen
 }
 
 // LastBlockLength returns the exact byte length of the final block in a piece.
@@ -188,12 +183,12 @@ func StreamToPieceBlock(
 // maybe shorter.
 const BlockLength = 16 * 1024 // 16KiB
 
-// blockState tracks the lifecycle of an individual block inside a piece.
-type blockState uint8
+// blockStatus tracks the lifecycle of an individual block inside a piece.
+type blockStatus uint8
 
 const (
 	// blockWant: not yet requested by anyone — eligible for assignment.
-	blockWant blockState = iota
+	blockWant blockStatus = iota
 
 	// blockInflight: requested and waiting for data. In endgame, there may
 	// be multiple owners (see PieceState.Owners) fetching the same block.
@@ -217,7 +212,7 @@ type block struct {
 
 	// status is this block's current lifecycle state
 	// (pending/in-flight/complete).
-	status blockState
+	status blockStatus
 
 	// owners tracks, the set of peers currently assigned this block to
 	// fetch it. Each entry is a map from peer address to OwnerMeta.
@@ -324,11 +319,6 @@ func (pk *Picker) MarkPieceVerified(idx int, ok bool) {
 	if ok {
 		ps.verified = true
 		pk.bitfield.Set(idx)
-		avail := ps.availability
-		delete(pk.availabilityBuckets[avail], idx)
-		if len(pk.availabilityBuckets[avail]) == 0 {
-			delete(pk.availabilityBuckets, avail)
-		}
 
 		if pk.nextPiece == idx {
 			pk.nextPiece++
