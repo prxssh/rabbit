@@ -9,6 +9,10 @@ import (
 	"strconv"
 )
 
+// Unmarshal parses a single complete bencoded value from data and returns it.
+//
+// Returns an error if the input is malformed, exceeds Decoder limits, or
+// contains trailing data after the first value.
 func Unmarshal(data []byte) (any, error) {
 	d := NewDecoder(data)
 
@@ -18,9 +22,7 @@ func Unmarshal(data []byte) (any, error) {
 	}
 
 	if _, err := d.r.Peek(1); err == nil {
-		return nil, fmt.Errorf(
-			"bencoding: trailing data after first value",
-		)
+		return nil, fmt.Errorf("bencoding: trailing data after first value")
 	} else if err != io.EOF {
 		return nil, err
 	}
@@ -28,6 +30,7 @@ func Unmarshal(data []byte) (any, error) {
 	return v, nil
 }
 
+// Token identifies syntactic markers in the bencode stream.
 type Token byte
 
 func (t Token) Byte() byte {
@@ -35,34 +38,49 @@ func (t Token) Byte() byte {
 }
 
 const (
-	TokenDict            Token = 'd'
-	TokenInteger         Token = 'i'
-	TokenEnding          Token = 'e'
-	TokenList            Token = 'l'
+	// TokenDict begins a dictionary: 'd'
+	TokenDict Token = 'd'
+	// TokenInteger begins an integer: 'i'
+	TokenInteger Token = 'i'
+	// TokenEnding terminates a list, dictionary, or integer: 'e'
+	TokenEnding Token = 'e'
+	// TokenList begins a list: 'l'
+	TokenList Token = 'l'
+	// TokenStringSeparator separates a string length from its data ':'
 	TokenStringSeparator Token = ':'
 )
 
-// Decoder reads bencoded values from a buffered reader. It implements a
-// recursive descent over the data structure and therefore enforces a maximum
-// nesting depth to prevent stack overflows on malicious inputs.
+// Decoder reads bencoded value from an in-memory byte slice.
+//
+// A Decoder is safe for use by a single goroutine at a time.
 type Decoder struct {
-	r         *bufio.Reader
-	maxDepth  int   // Cap on nested lists/dicts
-	maxStrLen int64 // Cap on single byte-string length
-	maxDigits int   // Cap on decimal digits for ints/lengths
+	r         *bufio.Reader // source of bytes
+	maxDepth  int           // maximum nesting depth
+	maxStrLen int64         // maximum string length in bytes
+	maxDigits int           // maximum base-10 digits in an integer
 }
 
+// NewDecoder returns a new Decoder reading from data with conservative limits.
+// The returned Decoder is independent of data; the caller may modify data
+// after construction.
 func NewDecoder(data []byte) *Decoder {
 	return &Decoder{
 		r:         bufio.NewReader(bytes.NewBuffer(data)),
-		maxDepth:  2048,     // prevents pathological nesting
-		maxStrLen: 16 << 20, // 16 MiB per string
-		maxDigits: 19,       // fits int64 safely
+		maxDepth:  2048,     // protects against pathological nesting
+		maxStrLen: 16 << 20, // 16 MiB
+		maxDigits: 19,       // first int64 range
 	}
 }
 
+// Decode parses and returns the next bencoded value from the input.
+// It may return one of: int64, string, []any, or map[string]any.
+//
+// If limits are exceeded or input is malformed, Decode returns a non-nil
+// error.
 func (d *Decoder) Decode() (any, error) { return d.decode(0) }
 
+// decode is the recursive implementation of Decode. depth is the current
+// nesting level.
 func (d *Decoder) decode(depth int) (any, error) {
 	if depth > d.maxDepth {
 		return nil, errors.New("max depth exceeded")
@@ -89,6 +107,8 @@ func (d *Decoder) decode(depth int) (any, error) {
 	}
 }
 
+// decodeDict parses a dictionary and returns it as map[string]any.
+// Keys must be bencoded strings; values may be any bencoded type.
 func (d *Decoder) decodeDict(depth int) (map[string]any, error) {
 	dict := make(map[string]any, 8)
 
@@ -119,6 +139,7 @@ func (d *Decoder) decodeDict(depth int) (map[string]any, error) {
 	return dict, nil
 }
 
+// decodeList parses a list and returns it as []any.
 func (d *Decoder) decodeList(depth int) ([]any, error) {
 	var list []any
 
@@ -145,10 +166,13 @@ func (d *Decoder) decodeList(depth int) ([]any, error) {
 	return list, nil
 }
 
+// decodeInteger parses an integer value 'i' <digits> 'e' and returns it as int64.
 func (d *Decoder) decodeInteger() (int64, error) {
 	return d.readInteger(TokenEnding)
 }
 
+// decodeString parses a byte string with the form <len> ':' <bytes> and
+// returns it as a Go string.
 func (d *Decoder) decodeString() (string, error) {
 	n, err := d.readInteger(TokenStringSeparator)
 	if err != nil {
@@ -156,16 +180,10 @@ func (d *Decoder) decodeString() (string, error) {
 	}
 
 	if n < 0 {
-		return "", errors.New(
-			"invalid string: length can't be negative",
-		)
+		return "", fmt.Errorf("invalid string: length can't be negative")
 	}
 	if n > d.maxStrLen {
-		return "", fmt.Errorf(
-			"string too large: %d > %d",
-			n,
-			d.maxStrLen,
-		)
+		return "", fmt.Errorf("string too large: %d > %d", n, d.maxStrLen)
 	}
 	if n == 0 {
 		return "", nil
@@ -178,11 +196,16 @@ func (d *Decoder) decodeString() (string, error) {
 	return string(buf), nil
 }
 
+// readInteger reads a base-10, optionally signed integer terminated by delim,
+// enforcing d.maxDigits. The returned value is int64.
+//
+// For strings, delim should be TokenStringSeparator (':'); for numbers, 'e'.
+// readInteger performs basic canonicality checks (no leading zeros, no "-0").
 func (d *Decoder) readInteger(delim Token) (int64, error) {
 	buf, err := d.r.ReadSlice(byte(delim))
 	if err != nil {
 		if errors.Is(err, bufio.ErrBufferFull) {
-			return 0, errors.New("integer too long")
+			return 0, fmt.Errorf("integer too long")
 		}
 		return 0, err
 	}
@@ -190,23 +213,23 @@ func (d *Decoder) readInteger(delim Token) (int64, error) {
 	// drop the delim
 	n := len(buf) - 1
 	if n <= 0 {
-		return 0, errors.New("invalid integer: empty")
+		return 0, fmt.Errorf("invalid integer: empty")
 	}
 	s := buf[:n]
 
 	if s[0] == '-' {
 		if n == 0 {
-			return 0, errors.New("invalid integer: lone '-'")
+			return 0, fmt.Errorf("invalid integer: lone '-'")
 		}
 		if n > 1 && s[1] == '0' {
-			return 0, errors.New("invalid integer: negative zero")
+			return 0, fmt.Errorf("invalid integer: negative zero")
 		}
 	} else if s[0] == '0' && n > 1 {
-		return 0, errors.New("invalid integer: leading zero")
+		return 0, fmt.Errorf("invalid integer: leading zero")
 	}
 
 	if len(s) > d.maxDigits+1 {
-		return 0, errors.New("invalid integer: too many digits")
+		return 0, fmt.Errorf("invalid integer: too many digits")
 	}
 
 	v, err := strconv.ParseInt(string(s), 10, 64)

@@ -76,12 +76,7 @@ func TestEncode_Collections(t *testing.T) {
 	}{
 		{
 			name: "slice-nested",
-			in: []any{
-				int64(1),
-				"spam",
-				false,
-				[]any{"nested", int(2)},
-			},
+			in:   []any{int64(1), "spam", false, []any{"nested", int(2)}},
 			want: "li1e4:spami0el6:nestedi2eee",
 		},
 		{
@@ -126,11 +121,7 @@ func TestMarshal(t *testing.T) {
 		wantErrContains string
 	}{
 		{name: "list", in: []any{"a", int(1)}, want: "l1:ai1ee"},
-		{
-			name:            "unsupported",
-			in:              struct{}{},
-			wantErrContains: "unsupported datatype",
-		},
+		{name: "unsupported", in: struct{}{}, wantErrContains: "unsupported datatype"},
 	}
 
 	for _, tc := range tests {

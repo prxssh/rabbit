@@ -8,6 +8,10 @@ import (
 	"strconv"
 )
 
+// Marshal returns the bencoded form of v.
+//
+// See Encoder.Encode for the supported Go types. Marshal returns an error if
+// v's type is not supported.
 func Marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	e := NewEncoder(&buf)
@@ -18,14 +22,28 @@ func Marshal(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// Encoder writes bencoded values to an io.Writer.
+//
+// The zero value of Encoder is not usable; construct with NewEncoder.
 type Encoder struct {
 	w io.Writer
 }
 
+// NewEncoder returns a new Encoder that writes to w.
 func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{w: w}
 }
 
+// Encode writes the bencoded representation of v to the underlying writer.
+//
+// Supported value types:
+//
+//	string, []byte, bool, int/int8/int16/int32/int64,
+//	uint/uint8/uint16/uint32/uint64,
+//	[]any, map[string]any.
+//
+// For map[string]any, keys are emitted in lexicographic order. Encode returns
+// an error for unsupported types.
 func (e *Encoder) Encode(v any) error {
 	switch x := v.(type) {
 	case string:
@@ -66,6 +84,8 @@ func (e *Encoder) Encode(v any) error {
 	}
 }
 
+// encodeInt64 writes an integer as: 'i' <base10 digits> 'e'.
+// Example: i42e, i-7e.
 func (e *Encoder) encodeInt64(n int64) error {
 	if _, err := e.w.Write([]byte{TokenInteger.Byte()}); err != nil {
 		return err
@@ -81,6 +101,9 @@ func (e *Encoder) encodeInt64(n int64) error {
 	return err
 }
 
+// encodeUint writes an unsigned integer using the same integer production.
+// Bencode has no distinct unsigned type; this uses base-10 digits without a
+// sign.
 func (e *Encoder) encodeUint(u uint64) error {
 	if _, err := e.w.Write([]byte{TokenInteger.Byte()}); err != nil {
 		return err
@@ -96,6 +119,8 @@ func (e *Encoder) encodeUint(u uint64) error {
 	return err
 }
 
+// encodeString writes a byte string as: <len> ':' <bytes>.
+// The length is the number of bytes in s; s is written as-is.
 func (e *Encoder) encodeString(s string) error {
 	size := len(s)
 
@@ -113,6 +138,8 @@ func (e *Encoder) encodeString(s string) error {
 	return err
 }
 
+// encodeSlice writes a list: 'l' <elements> 'e'.
+// Each element is encoded recursively via Encode.
 func (e *Encoder) encodeSlice(xs []any) error {
 	if _, err := e.w.Write([]byte{TokenList.Byte()}); err != nil {
 		return err
@@ -128,6 +155,10 @@ func (e *Encoder) encodeSlice(xs []any) error {
 	return err
 }
 
+// encodeDict writes a dictionary: 'd' <key><value> ... 'e'.
+//
+// Keys are encoded as strings and emitted in lexicographic order, as required
+// by BEP 3. Values are encoded recursively via Encode.
 func (e *Encoder) encodeDict(m map[string]any) error {
 	if _, err := e.w.Write([]byte{TokenDict.Byte()}); err != nil {
 		return err
