@@ -41,14 +41,7 @@ func TestDecode_OK(t *testing.T) {
 		{
 			"list-nested",
 			"li1e4:spami0el6:nestedi2eee",
-			any(
-				[]any{
-					int64(1),
-					"spam",
-					int64(0),
-					[]any{"nested", int64(2)},
-				},
-			),
+			any([]any{int64(1), "spam", int64(0), []any{"nested", int64(2)}}),
 		},
 		{
 			"dict",
@@ -64,14 +57,16 @@ func TestDecode_OK(t *testing.T) {
 		{
 			"nested-structures",
 			"d8:announce14:http://tracker4:infod6:lengthi1024e4:name10:ubuntu.iso6:piecesl3:abc3:defeee",
-			any(map[string]any{
-				"announce": "http://tracker",
-				"info": map[string]any{
-					"length": int64(1024),
-					"name":   "ubuntu.iso",
-					"pieces": []any{"abc", "def"},
+			any(
+				map[string]any{
+					"announce": "http://tracker",
+					"info": map[string]any{
+						"length": int64(1024),
+						"name":   "ubuntu.iso",
+						"pieces": []any{"abc", "def"},
+					},
 				},
-			}),
+			),
 		},
 	}
 
@@ -125,11 +120,7 @@ func TestDecodeErrors_StringLength(t *testing.T) {
 		want string
 	}{
 		{"leading-zero", "01:", "invalid integer: leading zero"},
-		{
-			"negative-len",
-			"-1:",
-			"invalid string: length can't be negative",
-		},
+		{"negative-len", "-1:", "invalid string: length can't be negative"},
 		{"truncated-bytes", "5:abc", "read string"},
 	}
 
@@ -150,10 +141,7 @@ func TestDecodeErrors_TruncatedContainers(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := decodeFromString(t, tc.in); err == nil {
-				t.Fatalf(
-					"expected error for truncated %s, got nil",
-					tc.name,
-				)
+				t.Fatalf("expected error for truncated %s, got nil", tc.name)
 			}
 		})
 	}
@@ -168,11 +156,7 @@ func TestUnmarshal_OK(t *testing.T) {
 		{"string", []byte("4:spam"), any("spam")},
 		{"int", []byte("i42e"), any(int64(42))},
 		{"list", []byte("l4:spami1ee"), any([]any{"spam", int64(1)})},
-		{
-			"dict",
-			[]byte("d1:ai1ee"),
-			any(map[string]any{"a": int64(1)}),
-		},
+		{"dict", []byte("d1:ai1ee"), any(map[string]any{"a": int64(1)})},
 	}
 
 	for _, tc := range tests {
@@ -201,11 +185,7 @@ func TestUnmarshal_Errors(t *testing.T) {
 			want: "bencoding: trailing data after first value",
 		},
 		{name: "empty", in: nil, wantIs: io.EOF},
-		{
-			name: "decode-error",
-			in:   []byte("i-e"),
-			want: "invalid integer:",
-		},
+		{name: "decode-error", in: []byte("i-e"), want: "invalid integer:"},
 	}
 
 	for _, tc := range tests {
@@ -214,11 +194,7 @@ func TestUnmarshal_Errors(t *testing.T) {
 
 			if tc.wantIs != nil {
 				if !errors.Is(err, tc.wantIs) {
-					t.Fatalf(
-						"want %v, got %v",
-						tc.wantIs,
-						err,
-					)
+					t.Fatalf("want %v, got %v", tc.wantIs, err)
 				}
 				return
 			}
