@@ -4,7 +4,7 @@ import "testing"
 
 func TestNewSizeRounding(t *testing.T) {
 	cases := []struct {
-		nBits     int
+		nbits     int
 		wantBytes int
 	}{
 		{0, 0},
@@ -17,14 +17,9 @@ func TestNewSizeRounding(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		bf := New(tc.nBits)
+		bf := New(tc.nbits)
 		if got := len(bf); got != tc.wantBytes {
-			t.Fatalf(
-				"New(%d) bytes = %d; want %d",
-				tc.nBits,
-				got,
-				tc.wantBytes,
-			)
+			t.Fatalf("New(%d) bytes = %d; want %d", tc.nbits, got, tc.wantBytes)
 		}
 	}
 }
@@ -63,7 +58,7 @@ func TestSetHasClearAndBounds(t *testing.T) {
 	}
 }
 
-func TestFromBytesAndToBytesIndependence(t *testing.T) {
+func TestFromBytesAndBytesIndependence(t *testing.T) {
 	src := []byte{0xFF, 0x00}
 	bf := FromBytes(src)
 
@@ -73,10 +68,10 @@ func TestFromBytesAndToBytesIndependence(t *testing.T) {
 		t.Fatalf("FromBytes must copy input")
 	}
 
-	out := bf.ToBytes()
+	out := bf.Bytes()
 	out[1] = 0xAA
 	if bf[1] != 0x00 {
-		t.Fatalf("ToBytes must return a copy, not alias")
+		t.Fatalf("Bytes must return a copy, not alias")
 	}
 }
 
@@ -100,12 +95,12 @@ func TestCountAndEquals(t *testing.T) {
 		t.Fatalf("Count() = %d; want %d", got, 4)
 	}
 
-	same := FromBytes(bf.ToBytes())
+	same := FromBytes(bf.Bytes())
 	if !bf.Equals(same) {
 		t.Fatalf("Equals should report identical contents")
 	}
 
-	diff := FromBytes(bf.ToBytes())
+	diff := FromBytes(bf.Bytes())
 	diff.Set(9)
 	if bf.Equals(diff) {
 		t.Fatalf("Equals should detect difference")
