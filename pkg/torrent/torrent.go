@@ -219,16 +219,16 @@ func NewTorrent(
 
 	refillPeerQ := make(chan struct{}, 1)
 
-	peerManager := peer.NewManager(
-		clientID,
-		metainfo.Info.Hash,
-		len(metainfo.Info.Pieces),
-		metainfo.Info.PieceLength,
-		size,
-		pieceManager,
-		refillPeerQ,
-		log,
-	)
+	peerManager := peer.NewManager(&peer.ManagerOpts{
+		ClientID:     clientID,
+		InfoHash:     metainfo.Info.Hash,
+		Pieces:       len(metainfo.Info.Pieces),
+		PieceLength:  metainfo.Info.PieceLength,
+		Size:         size,
+		PieceManager: pieceManager,
+		RefillPeerQ:  refillPeerQ,
+		Log:          log,
+	})
 
 	return &Torrent{
 		Size:        size,
@@ -294,13 +294,13 @@ func (t *Torrent) Stop() {
 
 // Stats represents download progress and statistics for a torrent
 type Stats struct {
-	Downloaded   int64            `json:"downloaded"`
-	Uploaded     int64            `json:"uploaded"`
-	DownloadRate int64            `json:"downloadRate"`
-	UploadRate   int64            `json:"uploadRate"`
-	Progress     float64          `json:"progress"`
-	Peers        []peer.PeerStats `json:"peers"`
-	PieceStates  []int            `json:"pieceStates"`
+	Downloaded   int64              `json:"downloaded"`
+	Uploaded     int64              `json:"uploaded"`
+	DownloadRate int64              `json:"downloadRate"`
+	UploadRate   int64              `json:"uploadRate"`
+	Progress     float64            `json:"progress"`
+	Peers        []peer.PeerMetrics `json:"peers"`
+	PieceStates  []int              `json:"pieceStates"`
 }
 
 func (t *Torrent) GetStats() *Stats {

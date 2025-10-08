@@ -2,6 +2,9 @@ package peer
 
 import (
 	"context"
+	"crypto/sha1"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -15,159 +18,169 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Peer represents a single BitTorrent peer connection.
-//
-// It manages the protocol state machine (choke/interested), handles message
-// exchange, and tracks performance metrics for the connection.
-type Peer struct {
-	m    *Manager
-	log  *slog.Logger
-	conn net.Conn
-	addr netip.AddrPort
-
-	// Protocol state
-	amChoking      bool // are we choking this peer?
-	amInterested   bool // are we interested in this peer?
-	peerChoking    bool // is the peer choking us?
-	peerInterested bool // is the peer interested in us?
-
-	// bf is the peer's bitfield indicating which pieces they have.
-	bf bitfield.Bitfield
-
-	// outq buffers outgoing messages for asynchronous sending
-	outq chan *Message
-
-	// Performance metrics
-	statsMu         sync.RWMutex
-	connectedAt     time.Time
-	downloadedBytes int64
-	uploadedBytes   int64
-	requestsSent    int
-	blocksReceived  int
-	blocksFailed    int
-	lastActiveAt    time.Time
-
-	closed atomic.Bool
+type Hooks struct {
+	OnNeedWork        func(addr netip.AddrPort)
+	OnHave            func(addr netip.AddrPort, piece uint32)
+	OnBitfield        func(addr netip.AddrPort, bf bitfield.Bitfield)
+	OnRequest         func(addr netip.AddrPort, piece, begin, length uint32) ([]byte, error)
+	OnBlockReceived   func(addr netip.AddrPort, piece, begin uint32, data []byte)
+	OnCheckInterested func(bf bitfield.Bitfield) bool
 }
 
-// PeerStats represents performance metrics for a single peer connection.
 type PeerStats struct {
-	Addr           netip.AddrPort
-	Downloaded     int64         // total bytes downloaded from this peer
-	Uploaded       int64         // total bytes uploaded to this peer
-	RequestsSent   int           // number of block requests sent
-	BlocksReceived int           // number of blocks successfully received
-	BlocksFailed   int           // number of failed/invalid blocks
-	LastActive     time.Time     // timestamp of last message received
-	ConnectedAt    time.Time     // when the connection was established
-	ConnectedFor   time.Duration // how long the connection has been active
-	DownloadRate   int64         // estimated download rate in bytes/sec
-	IsChoked       bool          // true if peer is currently choking us
-	IsInterested   bool          // true if we are currently interested in peer
+	DownloadedBytes atomic.Int64
+	UploadedBytes   atomic.Int64
+	RequestsSent    atomic.Int64
+	BlocksReceived  atomic.Int64
+	BlocksFailed    atomic.Int64
+	LastActiveUnix  atomic.Int64
 }
 
-// dialPeer establishes a TCP connection to a peer and performs the BitTorrent
-// handshake.
-func dialPeer(
-	ctx context.Context,
-	m *Manager,
-	addr netip.AddrPort,
-) (*Peer, error) {
-	dialer := &net.Dialer{
-		KeepAlive: config.Load().DialTimeout,
-		Control:   nil,
-	}
-	conn, err := dialer.DialContext(ctx, "tcp", addr.String())
+type Peer struct {
+	log         *slog.Logger
+	conn        net.Conn
+	addr        netip.AddrPort
+	connectedAt time.Time
+	state       uint32
+	closed      atomic.Bool
+	stats       *PeerStats
+	outQ        chan *Message
+	piecesBF    bitfield.Bitfield
+	piecesBFMu  sync.RWMutex
+	hooks       Hooks
+	pieceReqQ   chan *piece.Request
+}
+
+type PeerMetrics struct {
+	Addr           netip.AddrPort
+	Downloaded     int64
+	Uploaded       int64
+	RequestsSent   int
+	BlocksReceived int
+	BlocksFailed   int
+	LastActive     time.Time
+	ConnectedAt    time.Time
+	ConnectedFor   time.Duration
+	DownloadRate   int64
+	UploadRate     int64
+	IsChoked       bool
+	IsInterested   bool
+}
+
+const (
+	stateAmChoking      = 1 << 0
+	stateAmInterested   = 1 << 1
+	statePeerChoking    = 1 << 2
+	statePeerInterested = 1 << 3
+)
+
+type PeerOpts struct {
+	Pieces    int
+	PieceReqQ <-chan piece.Request
+	PiecesBF  bitfield.Bitfield
+	InfoHash  [sha1.Size]byte
+	ClientID  [sha1.Size]byte
+	Log       *slog.Logger
+	Hooks     Hooks
+}
+
+func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, error) {
+	log := opts.Log.With("src", "peer", "addr", addr.String())
+
+	conn, err := net.DialTimeout("tcp", addr.String(), config.Load().DialTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	l := m.log.With("src", "peer", "addr", addr)
-
 	_ = conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
 	_ = conn.SetWriteDeadline(time.Now().Add(config.Load().WriteTimeout))
 
-	hs := NewHandshake(m.infoHash, m.clientID)
-	if err := hs.Perform(conn); err != nil {
+	h := NewHandshake(opts.InfoHash, opts.ClientID)
+	if err := h.Perform(conn); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	if err := WriteMessage(conn, MessageBitfield(m.pieceManager.Bitfield())); err != nil {
+
+	if err := WriteMessage(conn, MessageBitfield(opts.PiecesBF)); err != nil {
 		_ = conn.Close()
 		return nil, err
-
 	}
 
 	_ = conn.SetReadDeadline(time.Time{})
 	_ = conn.SetWriteDeadline(time.Time{})
 
-	return &Peer{
-		m:              m,
-		log:            l,
-		addr:           addr,
-		conn:           conn,
-		amChoking:      true,
-		amInterested:   false,
-		peerChoking:    true,
-		peerInterested: false,
-		connectedAt:    time.Now(),
-		lastActiveAt:   time.Now(),
-		bf:             bitfield.New(m.pieceCount),
-		outq: make(
-			chan *Message,
-			config.Load().PeerOutboundQueueBacklog,
-		),
-	}, nil
-}
+	now := time.Now()
 
-func (p *Peer) LastActiveAt() time.Time {
-	p.statsMu.RLock()
-	defer p.statsMu.RUnlock()
-
-	return p.lastActiveAt
-}
-
-// Stats returns a snapshot of this peer's current performance metrics.
-func (p *Peer) Stats() PeerStats {
-	p.statsMu.RLock()
-	defer p.statsMu.RUnlock()
-
-	connectedFor := time.Since(p.connectedAt)
-
-	var downloadRate int64
-	seconds := int64(connectedFor.Seconds())
-	if seconds > 0 {
-		downloadRate = p.downloadedBytes / seconds
+	p := &Peer{
+		log:         log,
+		conn:        conn,
+		addr:        addr,
+		connectedAt: now,
+		stats:       &PeerStats{},
+		piecesBF:    bitfield.New(opts.Pieces),
+		pieceReqQ:   make(chan *piece.Request, 50),
+		outQ:        make(chan *Message, config.Load().PeerOutboundQueueBacklog),
+		hooks:       opts.Hooks,
 	}
 
-	return PeerStats{
-		Addr:           p.addr,
-		Downloaded:     p.downloadedBytes,
-		Uploaded:       p.uploadedBytes,
-		RequestsSent:   p.requestsSent,
-		BlocksReceived: p.blocksReceived,
-		BlocksFailed:   p.blocksFailed,
-		LastActive:     p.lastActiveAt,
-		ConnectedAt:    p.connectedAt,
-		ConnectedFor:   connectedFor,
-		DownloadRate:   downloadRate,
-		IsChoked:       p.peerChoking,
-		IsInterested:   p.peerInterested,
+	if !p.areHooksValid() {
+		return nil, errors.New("hooks is required and should be non-nil")
 	}
+
+	atomic.StoreUint32(&p.state, stateAmChoking|statePeerChoking)
+	p.stats.LastActiveUnix.Store(now.UnixNano())
+
+	log.Debug("peer connected")
+
+	return p, nil
 }
 
-// run executes the peer's read and write loops until the context is cancelled
-// or an error occurs. This method blocks until the peer stops.
-func (p *Peer) run(ctx context.Context) error {
+func (p *Peer) areHooksValid() bool {
+	return p.hooks.OnNeedWork != nil &&
+		p.hooks.OnBlockReceived != nil &&
+		p.hooks.OnHave != nil &&
+		p.hooks.OnRequest != nil &&
+		p.hooks.OnBitfield != nil &&
+		p.hooks.OnCheckInterested != nil
+}
+
+func (p *Peer) Run(ctx context.Context) error {
 	eg, ctx := errgroup.WithContext(ctx)
 
 	eg.Go(func() error { return p.readLoop(ctx) })
 	eg.Go(func() error { return p.writeLoop(ctx) })
+	eg.Go(func() error { return p.pieceRequestLoop(ctx) })
 
 	err := eg.Wait()
 	p.cleanup()
-
 	return err
+}
+
+func (p *Peer) Metrics() PeerMetrics {
+	connectedFor := time.Since(p.connectedAt)
+	sec := int64(connectedFor.Seconds())
+
+	var downloadRate, uploadRate int64
+	if sec > 0 {
+		downloadRate = p.stats.DownloadedBytes.Load() / sec
+		uploadRate = p.stats.UploadedBytes.Load() / sec
+	}
+
+	return PeerMetrics{
+		Addr:           p.addr,
+		DownloadRate:   downloadRate,
+		UploadRate:     uploadRate,
+		ConnectedAt:    p.connectedAt,
+		ConnectedFor:   connectedFor,
+		IsChoked:       p.peerChoking(),
+		IsInterested:   p.amInterested(),
+		Downloaded:     p.stats.DownloadedBytes.Load(),
+		Uploaded:       p.stats.UploadedBytes.Load(),
+		RequestsSent:   int(p.stats.RequestsSent.Load()),
+		BlocksReceived: int(p.stats.BlocksReceived.Load()),
+		BlocksFailed:   int(p.stats.BlocksFailed.Load()),
+		LastActive:     time.Unix(0, p.stats.LastActiveUnix.Load()),
+	}
 }
 
 func (p *Peer) cleanup() {
@@ -175,163 +188,152 @@ func (p *Peer) cleanup() {
 		return
 	}
 
-	close(p.outq)
-
-	p.m.pieceManager.OnPeerGone(p.addr, p.bf)
-	_ = p.conn.Close()
+	close(p.outQ)
+	p.conn.Close()
 }
 
-// readLoop continuously reads and processes messages from the peer until
-// the context is cancelled or an error occurs.
-func (p *Peer) readLoop(ctx context.Context) error {
-	l := p.log.With("src", "read.loop")
+func (p *Peer) setState(mask uint32, on bool) {
+	for {
+		old := atomic.LoadUint32(&p.state)
+		var next uint32
+		if on {
+			next = old | mask
+		} else {
+			next = old &^ mask
+		}
 
-	lastRecv := time.Now()
+		if atomic.CompareAndSwapUint32(&p.state, old, next) {
+			return
+		}
+	}
+}
+
+func (p *Peer) getState(mask uint32) bool {
+	return atomic.LoadUint32(&p.state)&mask != 0
+}
+
+func (p *Peer) amChoking() bool     { return p.getState(stateAmChoking) }
+func (p *Peer) amInterested() bool  { return p.getState(stateAmInterested) }
+func (p *Peer) peerChoking() bool   { return p.getState(statePeerChoking) }
+func (p *Peer) peerIntersted() bool { return p.getState(statePeerInterested) }
+
+func (p *Peer) readLoop(ctx context.Context) error {
+	l := p.log.With("src", "peer.read.loop")
+	l.Info("started")
+
+	lastReceived := time.Now()
 
 	for {
 		select {
 		case <-ctx.Done():
-			l.Info("loop exit",
-				"reason", "ctx",
-				"error", ctx.Err().Error(),
-			)
 			return ctx.Err()
 		default:
 		}
 
-		msg, err := p.readMessage()
+		message, err := p.readMessage()
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			if time.Since(
-				lastRecv,
-			) > config.Load().KeepAliveInterval {
+			if time.Since(lastReceived) > config.Load().PeerHeartbeatInterval {
 				return context.DeadlineExceeded
 			}
 			continue
 		}
 		if err != nil {
-			p.m.pieceManager.OnPeerGone(p.addr, p.bf)
 			return err
 		}
 
-		if msg == nil { // keep-alive
-			lastRecv = time.Now()
+		lastReceived = time.Now()
+
+		if message == nil {
 			continue
 		}
 
-		lastRecv = time.Now()
-
-		p.statsMu.Lock()
-		p.lastActiveAt = lastRecv
-		p.statsMu.Unlock()
-
-		switch msg.ID {
+		switch message.ID {
 		case MsgChoke:
-			p.peerChoking = true
-
+			p.setState(statePeerChoking, true)
 		case MsgUnchoke:
-			p.peerChoking = false
-			p.requestNextPiece()
-
+			p.setState(statePeerChoking, false)
+			p.hooks.OnNeedWork(p.addr)
 		case MsgInterested:
-			p.peerInterested = true
-
+			p.setState(statePeerInterested, true)
+			p.hooks.OnNeedWork(p.addr)
 		case MsgNotInterested:
-			p.peerInterested = false
-
+			p.setState(statePeerInterested, false)
 		case MsgBitfield:
-			p.bf = bitfield.FromBytes(msg.Payload)
-			p.m.pieceManager.OnPeerBitfield(p.addr, p.bf)
+			bf := bitfield.FromBytes(message.Payload)
+			p.piecesBFMu.Lock()
+			p.piecesBF = bf
+			p.piecesBFMu.Unlock()
 
-			if p.shouldBeInterested() && !p.amInterested {
+			p.hooks.OnBitfield(p.addr, bf)
+			if p.hooks.OnCheckInterested(bf) {
 				p.sendInterested()
 			}
-			p.requestNextPiece()
-
+			p.hooks.OnNeedWork(p.addr)
 		case MsgHave:
-			pieceIdx, ok := msg.ParseHave()
+			pieceIdx, ok := message.ParseHave()
 			if !ok {
 				continue
 			}
 
-			p.bf.Set(int(pieceIdx))
-			p.m.pieceManager.OnPeerHave(p.addr, int(pieceIdx))
+			p.piecesBFMu.Lock()
+			p.piecesBF.Set(int(pieceIdx))
+			// Make copy while holding lock
+			bf := make(bitfield.Bitfield, len(p.piecesBF))
+			copy(bf, p.piecesBF)
+			p.piecesBFMu.Unlock()
 
-			if p.shouldBeInterested() && !p.amInterested {
+			p.hooks.OnHave(p.addr, pieceIdx)
+			if p.hooks.OnCheckInterested(bf) {
 				p.sendInterested()
 			}
-			p.requestNextPiece()
-
+			p.hooks.OnNeedWork(p.addr)
 		case MsgPiece:
-			idx, begin, data, ok := msg.ParsePiece()
+			piece, begin, data, ok := message.ParsePiece()
 			if !ok {
-				p.statsMu.Lock()
-				p.blocksFailed++
-				p.statsMu.Unlock()
+				p.stats.BlocksFailed.Add(1)
 				continue
 			}
 
-			dataLen := len(data)
-			p.statsMu.Lock()
-			p.blocksReceived++
-			p.downloadedBytes += int64(dataLen)
-			p.statsMu.Unlock()
+			p.stats.BlocksReceived.Add(1)
+			p.stats.DownloadedBytes.Add(int64(len(data)))
 
-			p.m.updateTotalDownloaded(dataLen)
-
-			complete, _, err := p.m.pieceManager.OnBlockReceived(
-				p.addr,
-				int(idx),
-				int(begin),
-				data,
-			)
-			if err != nil {
-				p.log.Warn(
-					"block failure",
-					"error", err,
-					"piece_idx", idx,
-					"begin", begin,
-				)
-				continue
-			}
-			p.requestNextPiece()
-
-			if complete {
-				l.Info("piece complete", "piece_idx", idx)
-			}
-
+			p.hooks.OnBlockReceived(p.addr, piece, begin, data)
+			p.hooks.OnNeedWork(p.addr)
 		case MsgRequest:
-			index, begin, length, ok := msg.ParseRequest()
+			idx, begin, length, ok := message.ParseRequest()
 			if !ok {
 				continue
 			}
 
-			block, err := p.m.pieceManager.ReadPiece(
-				int(index),
-				int(begin),
-				int(length),
-			)
+			data, err := p.hooks.OnRequest(p.addr, idx, begin, length)
 			if err != nil {
-				p.log.Error("read piece failure",
+				l.Error("failed to fetch request block",
 					"error", err,
-					"index", index,
+					"piece", idx,
 					"begin", begin,
 					"length", length,
 				)
 				continue
 			}
-			p.outq <- MessagePiece(int(index), int(begin), block)
+
+			l.Info("seeded block to peer",
+				"piece", idx,
+				"begin", begin,
+				"length", length,
+			)
+
+			p.outQ <- MessagePiece(int(idx), int(begin), data)
+			p.stats.UploadedBytes.Add(int64(len(data)))
 
 		default:
-			l.Warn("message unknown", "message", msg.ID)
+			l.Warn("invalid message received", "message", message)
 		}
-
 	}
 }
 
-// writeLoop continuously sends queued messages and keep-alives to the peer
-// until the context is cancelled or an error occurs.
 func (p *Peer) writeLoop(ctx context.Context) error {
-	l := p.log.With("src", "write.loop")
+	l := p.log.With("src", "peer.write.loop")
+	l.Info("started")
 
 	keepAliveTicker := time.NewTicker(config.Load().KeepAliveInterval)
 	defer keepAliveTicker.Stop()
@@ -339,48 +341,46 @@ func (p *Peer) writeLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Info(
-				"exit",
-				"reason", "ctx",
-				"err", ctx.Err().Error(),
-			)
 			return ctx.Err()
 
-		case msg, ok := <-p.outq:
+		case message, ok := <-p.outQ:
 			if !ok {
-				l.Warn("outq closed")
+				l.Warn("outq closed; exiting loop")
 				return nil
 			}
 
-			if err := p.writeMessage(msg); err != nil {
-				l.Warn("write failed", "error", err.Error())
+			if err := p.writeMessage(message); err != nil {
+				l.Warn("write message failed; exiting loop", "error", err)
 				return err
 			}
 
 		case <-keepAliveTicker.C:
 			if err := p.writeMessage(nil); err != nil {
-				l.Warn(
-					"keepalive send error",
-					"error", err.Error(),
-				)
+				l.Warn("write keepalive failed; exiting loop", "error", err)
 				return err
 			}
 		}
 	}
 }
 
-func (p *Peer) writeMessage(message *Message) error {
-	_ = p.conn.SetWriteDeadline(time.Now().Add(config.Load().WriteTimeout))
-	defer p.conn.SetWriteDeadline(time.Time{})
+func (p *Peer) pieceRequestLoop(ctx context.Context) error {
+	l := p.log.With("src", "peer.piece_request.loop")
+	l.Info("started")
 
-	return WriteMessage(p.conn, message)
-}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case req, ok := <-p.pieceReqQ:
+			if !ok {
+				l.Warn("pieceReqQ closed; exiting loop")
+				return nil
+			}
 
-func (p *Peer) readMessage() (*Message, error) {
-	_ = p.conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
-	defer p.conn.SetReadDeadline(time.Time{})
-
-	return ReadMessage(p.conn)
+			p.outQ <- MessageRequest(req.Piece, req.Begin, req.Length)
+			p.stats.RequestsSent.Add(1)
+		}
+	}
 }
 
 func (p *Peer) sendInterested() {
@@ -388,12 +388,12 @@ func (p *Peer) sendInterested() {
 		return
 	}
 
-	if p.amInterested {
+	if p.amInterested() {
 		return
 	}
 
-	p.amInterested = true
-	p.outq <- MessageInterested()
+	p.setState(stateAmInterested, true)
+	p.outQ <- MessageInterested()
 }
 
 func (p *Peer) sendNotInterested() {
@@ -401,65 +401,86 @@ func (p *Peer) sendNotInterested() {
 		return
 	}
 
-	if !p.amInterested {
+	if !p.amInterested() {
 		return
 	}
 
-	p.amInterested = false
-	p.outq <- MessageNotInterested()
+	p.setState(stateAmInterested, false)
+	p.outQ <- MessageNotInterested()
 }
 
-func (p *Peer) shouldBeInterested() bool {
-	if p.closed.Load() {
-		return false
-	}
-
-	return p.m.pieceManager.HasAnyWantedPiece(p.bf)
-}
-
-func (p *Peer) sendHave(pieceIdx int) {
+func (p *Peer) sendHave(piece int) {
 	if p.closed.Load() {
 		return
 	}
 
-	p.outq <- MessageHave(pieceIdx)
+	p.outQ <- MessageHave(piece)
 }
 
-func (p *Peer) requestNextPiece() {
+func (p *Peer) sendCancel(piece, begin, length int) {
 	if p.closed.Load() {
 		return
 	}
 
-	if p.shouldBeInterested() && !p.amInterested {
-		p.sendInterested()
-		return
-	}
-	if p.peerChoking {
-		return
-	}
-
-	pv := p.piecePeerView()
-	if !pv.Unchoked {
-		return
-	}
-
-	reqs := p.m.pieceManager.NextForPeer(pv)
-	if len(reqs) == 0 {
-		return
-	}
-	for _, req := range reqs {
-		p.outq <- MessageRequest(req.Piece, req.Begin, req.Length)
-	}
-
-	p.statsMu.Lock()
-	p.requestsSent += len(reqs)
-	p.statsMu.Unlock()
+	p.outQ <- MessageCancel(piece, begin, length)
 }
 
-func (p *Peer) piecePeerView() *piece.PeerView {
-	return &piece.PeerView{
-		Peer:     p.addr,
-		Has:      p.bf,
-		Unchoked: !p.peerChoking,
+func (p *Peer) Bitfield() bitfield.Bitfield {
+	p.piecesBFMu.RLock()
+	defer p.piecesBFMu.RUnlock()
+
+	bf := make(bitfield.Bitfield, len(p.piecesBF))
+	copy(bf, p.piecesBF)
+	return bf
+}
+
+func (p *Peer) writeMessage(message *Message) error {
+	_ = p.conn.SetWriteDeadline(time.Now().Add(config.Load().WriteTimeout))
+	defer p.conn.SetWriteDeadline(time.Time{})
+
+	err := WriteMessage(p.conn, message)
+	if err == nil {
+		p.stats.LastActiveUnix.Store(time.Now().UnixNano())
 	}
+	return err
+}
+
+func (p *Peer) readMessage() (*Message, error) {
+	_ = p.conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
+	defer p.conn.SetReadDeadline(time.Time{})
+
+	message, err := ReadMessage(p.conn)
+	if err == nil {
+		p.stats.LastActiveUnix.Store(time.Now().UnixNano())
+	}
+	return message, err
+}
+
+func (p *Peer) formatMessageDetails(msg *Message) string {
+	if msg == nil {
+		return "keep-alive"
+	}
+
+	switch msg.ID {
+	case MsgHave:
+		if piece, ok := msg.ParseHave(); ok {
+			return fmt.Sprintf("#%d", piece)
+		}
+	case MsgRequest:
+		if idx, begin, length, ok := msg.ParseRequest(); ok {
+			return fmt.Sprintf("#%d @%d %dKB", idx, begin, length/1024)
+		}
+	case MsgPiece:
+		if idx, begin, block, ok := msg.ParsePiece(); ok {
+			return fmt.Sprintf("#%d @%d %dKB", idx, begin, len(block)/1024)
+		}
+	case MsgCancel:
+		if idx, begin, length, ok := msg.ParseRequest(); ok {
+			return fmt.Sprintf("#%d @%d %dKB", idx, begin, length/1024)
+		}
+	case MsgBitfield:
+		return fmt.Sprintf("%d bytes", len(msg.Payload))
+	}
+
+	return ""
 }

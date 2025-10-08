@@ -20,9 +20,9 @@
           <th>Status</th>
           <th>Downloaded</th>
           <th>Uploaded</th>
-          <th>Rate</th>
+          <th>Down Rate</th>
+          <th>Up Rate</th>
           <th>Connected</th>
-          <th>Blocks</th>
         </tr>
       </thead>
       <tbody>
@@ -44,8 +44,8 @@
             <td>{formatBytes(peer.Downloaded)}</td>
             <td>{formatBytes(peer.Uploaded)}</td>
             <td>{formatBytesPerSec(peer.DownloadRate)}</td>
+            <td>{formatBytesPerSec(peer.UploadRate)}</td>
             <td>{formatDuration(peer.ConnectedFor)}</td>
-            <td>{peer.BlocksReceived} / {peer.BlocksFailed} failed</td>
           </tr>
         {/each}
       </tbody>

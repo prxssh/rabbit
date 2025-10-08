@@ -296,9 +296,9 @@ func (pk *Picker) CapacityForPeer(peer netip.AddrPort) int {
 	pk.mu.RLock()
 	defer pk.mu.RUnlock()
 
-	left := config.Load().MaxInflightRequests - len(
-		pk.peerBlockAssignments[peer],
-	)
+	// Use peerInflightCount as the single source of truth for
+	// outstanding requests per peer.
+	left := config.Load().MaxInflightRequests - pk.peerInflightCount[peer]
 	if left < 0 {
 		return 0
 	}

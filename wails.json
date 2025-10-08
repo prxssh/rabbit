@@ -9,5 +9,8 @@
   "author": {
     "name": "prxssh",
     "email": "prxssh@pm.me"
+  },
+  "info": {
+      "icon": "frontend/src/assets/images/rabbit-icon.png"
   }
 }

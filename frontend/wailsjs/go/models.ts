@@ -69,7 +69,7 @@ export namespace config {
 
 export namespace peer {
 	
-	export class PeerStats {
+	export class PeerMetrics {
 	    // Go type: netip
 	    Addr: any;
 	    Downloaded: number;
@@ -83,11 +83,12 @@ export namespace peer {
 	    ConnectedAt: any;
 	    ConnectedFor: number;
 	    DownloadRate: number;
+	    UploadRate: number;
 	    IsChoked: boolean;
 	    IsInterested: boolean;
 	
 	    static createFrom(source: any = {}) {
-	        return new PeerStats(source);
+	        return new PeerMetrics(source);
 	    }
 	
 	    constructor(source: any = {}) {
@@ -102,6 +103,7 @@ export namespace peer {
 	        this.ConnectedAt = this.convertValues(source["ConnectedAt"], null);
 	        this.ConnectedFor = source["ConnectedFor"];
 	        this.DownloadRate = source["DownloadRate"];
+	        this.UploadRate = source["UploadRate"];
 	        this.IsChoked = source["IsChoked"];
 	        this.IsInterested = source["IsInterested"];
 	    }
@@ -236,7 +238,7 @@ export namespace torrent {
 	    downloadRate: number;
 	    uploadRate: number;
 	    progress: number;
-	    peers: peer.PeerStats[];
+	    peers: peer.PeerMetrics[];
 	    pieceStates: number[];
 	
 	    static createFrom(source: any = {}) {
@@ -250,7 +252,7 @@ export namespace torrent {
 	        this.downloadRate = source["downloadRate"];
 	        this.uploadRate = source["uploadRate"];
 	        this.progress = source["progress"];
-	        this.peers = this.convertValues(source["peers"], peer.PeerStats);
+	        this.peers = this.convertValues(source["peers"], peer.PeerMetrics);
 	        this.pieceStates = source["pieceStates"];
 	    }
 	

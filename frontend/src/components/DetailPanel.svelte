@@ -15,6 +15,7 @@
 
   $: meta = torrentData?.metainfo
   $: info = meta?.info
+  $: infoHash = info?.hash ? formatHash(info.hash) : ''
   $: totalPieces = info?.pieces?.length || 0
   $: effectivePieceStates = pieceStates.length > 0 ? pieceStates : new Array(totalPieces).fill(0)
 
@@ -203,4 +204,6 @@
     color: var(--color-text-disabled);
     white-space: nowrap;
   }
+
+  
 </style>

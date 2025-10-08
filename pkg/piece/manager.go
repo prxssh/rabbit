@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"time"
 
 	"github.com/prxssh/rabbit/pkg/config"
 	"github.com/prxssh/rabbit/pkg/utils/bitfield"
@@ -21,6 +22,13 @@ type Manager struct {
 	store       *Store
 	torrentSize int64
 	log         *slog.Logger
+}
+
+// Timeout represents a single inflight block that exceeded the timeout.
+type Timeout struct {
+	Peer  netip.AddrPort
+	Piece int
+	Begin int
 }
 
 // NewPieceManager creates a Manager that coordinates piece picking and disk
@@ -137,8 +145,8 @@ func (m *Manager) OnBlockReceived(
 	return true, cancels, nil
 }
 
-func (m *Manager) NextForPeer(pv *PeerView) []*Request {
-	return m.picker.NextForPeer(pv)
+func (m *Manager) NextForPeerN(pv *PeerView, count int) []*Request {
+	return m.picker.NextForPeerN(pv, count)
 }
 
 func (m *Manager) HasAnyWantedPiece(bf bitfield.Bitfield) bool {
@@ -158,8 +166,8 @@ func (m *Manager) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
 	m.picker.OnPeerBitfield(peer, bf)
 }
 
-func (m *Manager) OnPeerHave(peer netip.AddrPort, pieceIdx int) {
-	m.picker.OnPeerHave(peer, pieceIdx)
+func (m *Manager) OnPeerHave(peer netip.AddrPort, piece uint32) {
+	m.picker.OnPeerHave(peer, int(piece))
 }
 
 func (m *Manager) OnTimeout(peer netip.AddrPort, pieceIdx, begin int) {
@@ -230,4 +238,42 @@ func (m *Manager) ReadPiece(index, begin, length int) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+func (m *Manager) CapacityForPeer(peer netip.AddrPort) int {
+	return m.picker.CapacityForPeer(peer)
+}
+
+// ScanAndReclaimTimedOutBlocks checks for blocks that have been inflight too
+// long and reclaims them so they can be reassigned to other peers.
+func (m *Manager) ScanAndReclaimTimedOutBlocks(timeout time.Duration) []Timeout {
+	timedOut := m.picker.ScanTimedOutBlocks(timeout)
+
+	if len(timedOut) > 0 {
+		m.log.Info("timed out blocks", "timed_out_blocks_count", len(timedOut))
+	}
+
+	for _, to := range timedOut {
+		m.log.Debug(
+			"block timeout, reclaiming",
+			"peer", to.Peer.String(),
+			"piece", to.Piece,
+			"begin", to.Begin,
+		)
+		m.picker.OnTimeout(to.Peer, to.Piece, to.Begin)
+	}
+
+	outs := make([]Timeout, 0, len(timedOut))
+	for _, to := range timedOut {
+		outs = append(outs, Timeout{Peer: to.Peer, Piece: to.Piece, Begin: to.Begin})
+	}
+	return outs
+}
+
+func (m *Manager) OnCancel(peer netip.AddrPort, pieceIdx, begin int) {
+	m.picker.OnTimeout(peer, pieceIdx, begin)
+}
+
+func (m *Manager) Unassign(peer netip.AddrPort, pieceIdx, begin int) {
+	m.picker.Unassign(peer, pieceIdx, begin)
 }

@@ -21,9 +21,9 @@
   --color-text-disabled: #666666;
 
   /* Primary Color */
-  --color-primary: #3b82f6; /* blue */
-  --color-primary-dark: #2563eb;
-  --color-primary-light: #60a5fa;
+  --color-primary: #444444;
+  --color-primary-dark: #333333;
+  --color-primary-light: #555555;
 
   /* Status Colors */
   --color-success: #88ff88;
@@ -42,7 +42,7 @@
   --color-warning-border: #660000;
 
   /* Accent (used for in-progress pieces in heatmap) */
-  --color-accent: #3b82f6; /* blue */
+  --color-accent: #666666;
 
   /* Typography */
   --font-family-mono: 'Fira Code', 'JetBrains Mono', 'Courier New', monospace;

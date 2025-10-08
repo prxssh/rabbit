@@ -1,51 +1,49 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
 
-  // pieceStates: 0 = not started, 1 = in progress, 2 = completed
   export let pieceStates: number[] = []
   export let totalPieces: number = 0
 
-  // Calculate piece statistics
   $: completedCount = pieceStates.filter(s => s === 2).length
   $: inProgressCount = pieceStates.filter(s => s === 1).length
+  $: notStartedCount = totalPieces - completedCount - inProgressCount
   $: completionPercentage = totalPieces > 0 ? ((completedCount / totalPieces) * 100).toFixed(1) : 0
 
   let canvas: HTMLCanvasElement
   let container: HTMLDivElement
   let ctx: CanvasRenderingContext2D
   let animationFrameId: number
-
-  // Zoom and pan state
-  let zoomLevel = 1
-  let panX = 0
-  let panY = 0
-  let isPanning = false
-  let startPanX = 0
-  let startPanY = 0
-
-  // Container width tracking
   let containerWidth = 800
+  let zoomLevel = 1
 
-  // Calculate smart cell size based on piece count
-  function getSmartCellSize(pieces: number): number {
-    if (pieces <= 50) return 24
-    if (pieces <= 200) return 16
-    if (pieces <= 500) return 12
-    if (pieces <= 2000) return 8
-    return 6
+  function getOptimalCellSize(pieces: number): number {
+    if (pieces <= 100) return 12
+    if (pieces <= 500) return 8
+    if (pieces <= 2000) return 5
+    return 3
   }
 
-  // Calculate grid dimensions - fill width
-  $: baseCellSize = getSmartCellSize(totalPieces)
-  $: cellSize = baseCellSize * zoomLevel
-  $: gap = cellSize > 4 ? 1 : 0
-  $: availableWidth = containerWidth - 24 // subtract padding
+  $: baseCellSize = getOptimalCellSize(totalPieces)
+  $: cellSize = Math.max(2, Math.round(baseCellSize * zoomLevel))
+  $: gap = cellSize >= 8 ? 2 : 1
+  $: availableWidth = containerWidth - 32
   $: columns = Math.max(1, Math.floor(availableWidth / (cellSize + gap)))
   $: rows = Math.ceil(totalPieces / columns)
   $: canvasWidth = columns * (cellSize + gap) - gap
   $: canvasHeight = rows * (cellSize + gap) - gap
 
-  // Update container width on resize
+  function handleZoomIn() {
+    zoomLevel = Math.min(zoomLevel + 0.25, 3)
+  }
+
+  function handleZoomOut() {
+    zoomLevel = Math.max(zoomLevel - 0.25, 0.5)
+  }
+
+  function handleZoomReset() {
+    zoomLevel = 1
+  }
+
   function updateContainerWidth() {
     if (container) {
       containerWidth = container.clientWidth
@@ -64,8 +62,7 @@
     startAnimation()
   }
 
-  let blinkOpacity = 1
-  let blinkDirection = -1
+  let pulsePhase = 0
 
   function startAnimation() {
     if (animationFrameId) {
@@ -75,14 +72,7 @@
   }
 
   function animate() {
-    blinkOpacity += blinkDirection * 0.05
-    if (blinkOpacity <= 0.3) {
-      blinkOpacity = 0.3
-      blinkDirection = 1
-    } else if (blinkOpacity >= 1) {
-      blinkOpacity = 1
-      blinkDirection = -1
-    }
+    pulsePhase += 0.04
 
     drawHeatmap()
     animationFrameId = requestAnimationFrame(animate)
@@ -92,9 +82,9 @@
     if (!ctx || !canvas || totalPieces === 0) return
 
     const style = getComputedStyle(canvas)
-    const completedColor = style.getPropertyValue('--color-success') || '#10b981'
-    const notStartedColor = style.getPropertyValue('--color-bg-secondary') || '#374151'
+    const completedColor = style.getPropertyValue('--color-success') || '#88ff88'
     const inProgressColor = style.getPropertyValue('--color-accent') || '#3b82f6'
+    const notStartedColor = style.getPropertyValue('--color-bg-tertiary') || '#1a1a1a'
 
     if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
       canvas.width = canvasWidth
@@ -111,68 +101,21 @@
       const state = pieceStates[i] || 0
 
       if (state === 2) {
-        // completed - solid green
         ctx.fillStyle = completedColor
+        ctx.fillRect(x, y, cellSize, cellSize)
       } else if (state === 1) {
-        // in progress - distinct blinking color (amber/orange)
-        const rgb = hexToRgb(inProgressColor)
-        ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${blinkOpacity})`
+        const pulse = 0.5 + Math.sin(pulsePhase) * 0.5
+        ctx.fillStyle = inProgressColor
+        ctx.globalAlpha = pulse
+        ctx.fillRect(x, y, cellSize, cellSize)
+        ctx.globalAlpha = 1
       } else {
-        // not started - gray
         ctx.fillStyle = notStartedColor
+        ctx.fillRect(x, y, cellSize, cellSize)
       }
-
-      ctx.fillRect(x, y, cellSize, cellSize)
     }
   }
 
-  function hexToRgb(hex: string): { r: number; g: number; b: number } {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
-    return result ? {
-      r: parseInt(result[1], 16),
-      g: parseInt(result[2], 16),
-      b: parseInt(result[3], 16)
-    } : { r: 16, g: 185, b: 129 }
-  }
-
-  function handleZoomIn() {
-    zoomLevel = Math.min(zoomLevel * 1.5, 5)
-  }
-
-  function handleZoomOut() {
-    zoomLevel = Math.max(zoomLevel / 1.5, 0.5)
-  }
-
-  function handleZoomReset() {
-    zoomLevel = 1
-    panX = 0
-    panY = 0
-    if (container) {
-      container.scrollLeft = 0
-      container.scrollTop = 0
-    }
-  }
-
-  function handleMouseDown(e: MouseEvent) {
-    if (zoomLevel > 1) {
-      isPanning = true
-      startPanX = e.clientX - panX
-      startPanY = e.clientY - panY
-    }
-  }
-
-  function handleMouseMove(e: MouseEvent) {
-    if (isPanning) {
-      panX = e.clientX - startPanX
-      panY = e.clientY - startPanY
-    }
-  }
-
-  function handleMouseUp() {
-    isPanning = false
-  }
-
-  // Handle window resize
   function handleResize() {
     updateContainerWidth()
   }
@@ -190,105 +133,139 @@
   })
 </script>
 
-<div class="heatmap-container">
-  <div class="heatmap-header">
-    <div class="heatmap-stats">
-      <span class="heatmap-title">Pieces ({completedCount} / {totalPieces})</span>
-      <span class="heatmap-percentage">{completionPercentage}% complete</span>
-      <span class="cell-size-indicator">{baseCellSize}px per piece</span>
+<div class="heatmap-wrapper">
+  <div class="stats-header">
+    <div class="progress-stats">
+      <div class="main-percentage">{completionPercentage}%</div>
+      <div class="piece-breakdown">
+        <div class="stat-item">
+          <div class="stat-dot complete"></div>
+          <span class="stat-value">{completedCount}</span>
+          <span class="stat-label">completed</span>
+        </div>
+        <div class="stat-divider">/</div>
+        <div class="stat-item">
+          <div class="stat-dot progress"></div>
+          <span class="stat-value">{inProgressCount}</span>
+          <span class="stat-label">active</span>
+        </div>
+        <div class="stat-divider">/</div>
+        <div class="stat-item">
+          <div class="stat-dot pending"></div>
+          <span class="stat-value">{notStartedCount}</span>
+          <span class="stat-label">pending</span>
+        </div>
+      </div>
     </div>
-    <div class="controls">
-      <div class="zoom-controls">
-        <button class="zoom-btn" on:click={handleZoomOut} title="Zoom out">−</button>
-        <span class="zoom-level">{Math.round(zoomLevel * 100)}%</span>
-        <button class="zoom-btn" on:click={handleZoomIn} title="Zoom in">+</button>
-        <button class="zoom-btn reset" on:click={handleZoomReset} title="Reset zoom">Reset</button>
-      </div>
-      <div class="legend">
-        <div class="legend-item">
-          <div class="legend-color completed"></div>
-          <span>Complete</span>
-        </div>
-        <div class="legend-item">
-          <div class="legend-color in-progress"></div>
-          <span>In Progress</span>
-        </div>
-        <div class="legend-item">
-          <div class="legend-color not-started"></div>
-          <span>Not Started</span>
-        </div>
-      </div>
+
+    <div class="zoom-controls">
+      <button class="zoom-btn" on:click={handleZoomOut} title="Zoom out" disabled={zoomLevel <= 0.5}>−</button>
+      <span class="zoom-text">{Math.round(zoomLevel * 100)}%</span>
+      <button class="zoom-btn" on:click={handleZoomIn} title="Zoom in" disabled={zoomLevel >= 3}>+</button>
+      <button class="zoom-btn reset" on:click={handleZoomReset} title="Reset zoom">⟲</button>
     </div>
   </div>
-  <div
-    class="heatmap-canvas-container"
-    bind:this={container}
-    class:panning={isPanning}
-  >
-    <canvas
-      bind:this={canvas}
-      class="heatmap-canvas"
-      on:mousedown={handleMouseDown}
-      on:mousemove={handleMouseMove}
-      on:mouseup={handleMouseUp}
-      on:mouseleave={handleMouseUp}
-    ></canvas>
+
+  <div class="grid-container" bind:this={container}>
+    <canvas bind:this={canvas} class="heatmap-canvas"></canvas>
   </div>
 </div>
 
 <style>
-  .heatmap-container {
+  .heatmap-wrapper {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-3);
+    gap: var(--spacing-4);
     width: 100%;
-    height: auto;
-    min-height: 100%;
   }
 
-  .heatmap-header {
+  .stats-header {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
-    flex-wrap: wrap;
+    align-items: center;
+    background-color: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-primary);
+    border-radius: var(--radius-base);
+    padding: var(--spacing-3) var(--spacing-4);
+    gap: var(--spacing-4);
+  }
+
+  .progress-stats {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-5);
+    flex: 1;
+  }
+
+  .main-percentage {
+    font-size: 32px;
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+    font-family: var(--font-family-mono);
+    line-height: 1;
+    letter-spacing: var(--letter-spacing-tight);
+  }
+
+  .piece-breakdown {
+    display: flex;
+    align-items: center;
     gap: var(--spacing-3);
   }
 
-  .heatmap-stats {
+  .stat-item {
     display: flex;
-    gap: var(--spacing-4);
     align-items: center;
-    flex-wrap: wrap;
+    gap: var(--spacing-2);
   }
 
-  .heatmap-title {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
+  .stat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .stat-dot.complete {
+    background-color: var(--color-success);
+  }
+
+  .stat-dot.progress {
+    background-color: var(--color-accent);
+  }
+
+  .stat-dot.pending {
+    background-color: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border-tertiary);
+  }
+
+  .stat-value {
+    font-size: var(--font-size-md);
     font-weight: var(--font-weight-medium);
+    color: var(--color-text-primary);
+    font-family: var(--font-family-mono);
+    min-width: 20px;
+    text-align: right;
   }
 
-  .heatmap-percentage {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
-  }
-
-  .cell-size-indicator {
+  .stat-label {
     font-size: var(--font-size-xs);
-    color: var(--color-text-disabled);
+    color: var(--color-text-muted);
+    text-transform: lowercase;
   }
 
-  .controls {
-    display: flex;
-    gap: var(--spacing-4);
-    align-items: center;
-    flex-wrap: wrap;
+  .stat-divider {
+    color: var(--color-text-disabled);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-normal);
+    padding: 0 var(--spacing-1);
   }
 
   .zoom-controls {
     display: flex;
-    gap: var(--spacing-2);
     align-items: center;
-    background-color: var(--color-bg-tertiary);
+    gap: var(--spacing-1);
+    background-color: var(--color-bg-primary);
+    border: 1px solid var(--color-border-primary);
     border-radius: var(--radius-base);
     padding: var(--spacing-1);
   }
@@ -301,84 +278,50 @@
     cursor: pointer;
     padding: var(--spacing-1) var(--spacing-2);
     border-radius: var(--radius-sm);
-    transition: all var(--transition-base);
+    transition: all var(--transition-fast);
     min-width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
-  .zoom-btn:hover {
+  .zoom-btn:hover:not(:disabled) {
     background-color: var(--color-bg-hover);
     color: var(--color-text-primary);
   }
 
-  .zoom-btn.reset {
-    font-size: var(--font-size-xs);
+  .zoom-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
   }
 
-  .zoom-level {
+  .zoom-btn.reset {
+    font-size: var(--font-size-lg);
+    margin-left: var(--spacing-1);
+    border-left: 1px solid var(--color-border-primary);
+    padding-left: var(--spacing-2);
+  }
+
+  .zoom-text {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    min-width: 45px;
+    font-family: var(--font-family-mono);
+    min-width: 40px;
     text-align: center;
   }
 
-  .legend {
-    display: flex;
-    gap: var(--spacing-4);
-  }
-
-  .legend-item {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-2);
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
-
-  .legend-color {
-    width: 12px;
-    height: 12px;
-    border-radius: 2px;
-  }
-
-  .legend-color.completed {
-    background-color: var(--color-success);
-  }
-
-  .legend-color.in-progress {
-    background-color: var(--color-accent, #3b82f6);
-    animation: blink 1s ease-in-out infinite;
-  }
-
-  @keyframes blink {
-    0%, 100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.3;
-    }
-  }
-
-  .legend-color.not-started {
-    background-color: var(--color-bg-secondary);
-    border: 1px solid var(--color-border-primary);
-  }
-
-  .heatmap-canvas-container {
+  .grid-container {
     background-color: var(--color-bg-primary);
     border: 1px solid var(--color-border-primary);
     border-radius: var(--radius-base);
+    padding: var(--spacing-4);
     overflow: auto;
-    min-height: 150px;
-    max-height: 300px;
-    padding: var(--spacing-3);
-  }
-
-  .heatmap-canvas-container.panning {
-    cursor: grabbing;
+    max-height: 240px;
   }
 
   .heatmap-canvas {
-    image-rendering: pixelated;
     display: block;
+    image-rendering: pixelated;
   }
 </style>

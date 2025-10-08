@@ -9,6 +9,7 @@
 
   $: meta = torrentData?.metainfo
   $: info = meta?.info
+  $: infoHash = info?.hash ? formatHash(info.hash) : ''
 </script>
 
 <div class="detail-view">

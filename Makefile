@@ -16,7 +16,7 @@ clean:
 	rm -rf build
 
 format: 
-	golines -m 80 -t 8 --shorten-comments -w .
+	golines -m 100 -t 8 --shorten-comments -w .
 	gofmt -w .
 
 test: 

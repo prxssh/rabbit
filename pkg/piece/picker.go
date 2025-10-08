@@ -14,9 +14,10 @@ import (
 
 // Cancel represents a block request that should be cancelled.
 type Cancel struct {
-	Peer  netip.AddrPort // candidate peer
-	Piece int            // piece index
-	Begin int            // block offset
+	Peer   netip.AddrPort // candidate peer
+	Piece  int            // piece index
+	Begin  int            // block offset
+	Length int            // block length
 }
 
 // PeerView is a read-only snapshot of what the picker needs to decide whether
@@ -400,14 +401,23 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort, bf bitfield.Bitfield) {
 		if blockIdx < 0 || blockIdx >= ps.blockCount {
 			continue
 		}
-		delete(ps.blocks[blockIdx].owners, peer)
-
 		block := ps.blocks[blockIdx]
+		if _, had := block.owners[peer]; had {
+			// Remove ownership and adjust counters
+			delete(block.owners, peer)
+			if block.pendingRequests > 0 {
+				block.pendingRequests--
+			}
+			if pk.inflightRequests > 0 {
+				pk.inflightRequests--
+			}
 
-		if block.status == blockInflight && len(block.owners) == 0 {
-			block.status = blockWant
-			if pieceIdx == pk.nextPiece && blockIdx < pk.nextBlock {
-				pk.nextBlock = blockIdx
+			if block.status == blockInflight && len(block.owners) == 0 {
+				block.status = blockWant
+				block.pendingRequests = 0
+				if pieceIdx == pk.nextPiece && blockIdx < pk.nextBlock {
+					pk.nextBlock = blockIdx
+				}
 			}
 		}
 	}
@@ -444,9 +454,10 @@ func (pk *Picker) OnBlockReceived(
 	for owner := range ps.blocks[bi].owners {
 		if owner != peer {
 			cancels = append(cancels, Cancel{
-				Peer:  owner,
-				Piece: pieceIdx,
-				Begin: begin,
+				Peer:   owner,
+				Piece:  pieceIdx,
+				Begin:  begin,
+				Length: BlockLength,
 			})
 		} else {
 			freedSelf = true
@@ -519,33 +530,13 @@ func (pk *Picker) HasAnyWantedPiece(bf bitfield.Bitfield) bool {
 // NextForPeer chooses up to one next block to request from this peer,
 // respecting its unchoked state and per-peer pipeline limit. It also registers
 // ownership (peer→block) when a request is issued.
-func (pk *Picker) NextForPeer(pv *PeerView) []*Request {
-	cfg := config.Load()
-
+func (pk *Picker) NextForPeerN(pv *PeerView, limit int) []*Request {
 	if !pv.Unchoked {
 		return nil
 	}
 
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
-
-	perPeerLeft := cfg.MaxInflightRequests - pk.peerInflightCount[pv.Peer]
-	if perPeerLeft <= 0 {
-		return nil
-	}
-
-	globalLeft := cfg.MaxInflightRequests - pk.inflightRequests
-	if globalLeft <= 0 {
-		return nil
-	}
-
-	limit := perPeerLeft
-	if globalLeft < limit {
-		limit = globalLeft
-	}
-	if limit <= 0 {
-		return nil
-	}
 
 	var reqs []*Request
 
@@ -586,20 +577,74 @@ func (pk *Picker) OnTimeout(peer netip.AddrPort, pieceIdx, begin int) {
 		return
 	}
 
-	if _, had := ps.blocks[bi].owners[peer]; !had {
+	block := ps.blocks[bi]
+	if _, had := block.owners[peer]; !had {
 		return
 	}
-	delete(ps.blocks[bi].owners, peer)
+	delete(block.owners, peer)
 	delete(pk.peerBlockAssignments[peer], packKey(pieceIdx, bi))
 	pk.peerInflightCount[peer]--
 	if pk.peerInflightCount[peer] < 0 {
 		pk.peerInflightCount[peer] = 0
 	}
 
+	if block.pendingRequests > 0 {
+		block.pendingRequests--
+	}
+	if pk.inflightRequests > 0 {
+		pk.inflightRequests--
+	}
+
 	// If nobody else is fetching it, return to WANT.
-	if ps.blocks[bi].status == blockInflight &&
-		len(ps.blocks[bi].owners) == 0 {
-		ps.blocks[bi].status = blockWant
+	if block.status == blockInflight && len(block.owners) == 0 {
+		block.status = blockWant
+		block.pendingRequests = 0
+		// Pull back sequential cursor to retry sooner.
+		if pieceIdx == pk.nextPiece {
+			if b := bi; b < pk.nextBlock {
+				pk.nextBlock = b
+			}
+		}
+	}
+}
+
+// Unassign reclaims a block that was assigned but never actually sent
+// (e.g., due to dispatcher backpressure or peer closure).
+// It does NOT treat this as a timeout or peer fault.
+func (pk *Picker) Unassign(peer netip.AddrPort, pieceIdx, begin int) {
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
+
+	if pieceIdx < 0 || pieceIdx >= pk.PieceCount {
+		return
+	}
+
+	ps := pk.pieces[pieceIdx]
+	bi := BlockIndexForBegin(begin, ps.length, pk.BlockLength)
+	if bi < 0 || bi >= ps.blockCount {
+		return
+	}
+
+	block := ps.blocks[bi]
+	if _, had := block.owners[peer]; !had {
+		return
+	}
+
+	delete(block.owners, peer)
+	delete(pk.peerBlockAssignments[peer], packKey(pieceIdx, bi))
+	pk.peerInflightCount[peer]--
+	if pk.peerInflightCount[peer] < 0 {
+		pk.peerInflightCount[peer] = 0
+	}
+
+	if pk.inflightRequests > 0 {
+		pk.inflightRequests--
+	}
+
+	// If nobody else is fetching it, return to WANT.
+	if block.status == blockInflight && len(block.owners) == 0 {
+		block.status = blockWant
+		block.pendingRequests = 0
 		// Pull back sequential cursor to retry sooner.
 		if pieceIdx == pk.nextPiece {
 			if b := bi; b < pk.nextBlock {
@@ -641,4 +686,52 @@ func (pk *Picker) updatePieceAvailability(idx, delta int) {
 
 	pk.availability.Move(idx, delta, pk.rng)
 	pk.pieces[idx].availability = int(pk.availability.avail[idx])
+}
+
+// ScanTimedOutBlocks finds all blocks that have been inflight longer than the
+// timeout duration and returns them as timeouts to be reclaimed.
+func (pk *Picker) ScanTimedOutBlocks(timeout time.Duration) []struct {
+	Peer  netip.AddrPort
+	Piece int
+	Begin int
+} {
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
+
+	now := time.Now()
+	var timedOut []struct {
+		Peer  netip.AddrPort
+		Piece int
+		Begin int
+	}
+
+	for pieceIdx, ps := range pk.pieces {
+		if ps.verified {
+			continue
+		}
+
+		for blockIdx, block := range ps.blocks {
+			if block.status != blockInflight {
+				continue
+			}
+
+			begin, _, _ := BlockBounds(ps.length, blockIdx)
+
+			for peer, meta := range block.owners {
+				if now.Sub(meta.sentAt) > timeout {
+					timedOut = append(timedOut, struct {
+						Peer  netip.AddrPort
+						Piece int
+						Begin int
+					}{
+						Peer:  peer,
+						Piece: pieceIdx,
+						Begin: begin,
+					})
+				}
+			}
+		}
+	}
+
+	return timedOut
 }
