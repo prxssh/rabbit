@@ -35,90 +35,18 @@ const (
 
 // Config defines behavior and resource limits for a torrent download.
 type Config struct {
+	// ========== Identity / Paths ==========
+
 	// DefaultDownloadDir is the default directory where NEW torrent files
 	// are saved. Changing this only affects new torrents; existing torrents
 	// continue downloading to their original location.
 	DefaultDownloadDir string
 
-	// Port is the TCP port this client listens on for incoming peer
-	// connections.
-	Port uint16
-
-	// NumWant is the maximum number of peers to request the tracker.
-	NumWant uint32
-
-	// MaxUploadRate limits upload speed in bytes/second. 0 = unlimited.
-	MaxUploadRate int64
-
-	// MaxDownloadRate limits download speed in bytes/second. 0 = unlimited.
-	MaxDownloadRate int64
-
-	// AnnounceInterval overrides tracker's suggested interval.
-	// 0 uses tracker default.
-	AnnounceInterval time.Duration
-
-	// MinAnnounceInterval enforces a minimum time between announces.
-	MinAnnounceInterval time.Duration
-
-	// MaxAnnounceBackoff caps exponential backoff for failed announces.
-	MaxAnnounceBackoff time.Duration
-
-	// EnableIPv6 allows connections to IPv6 peers.
-	EnableIPv6 bool
-
-	// EnableDHT enables DHT for peer discovery (future).
-	EnableDHT bool
-
-	// EnablePEX enables peer exchange protocol (future).
-	EnablePEX bool
-
 	// ClientIDPrefix customizes the peer ID prefix (e.g., "-EC0001-").
 	// Must be exactly 8 bytes. Empty uses default.
 	ClientIDPrefix string
 
-	// hasIPV6 keeps track of whether or not the system supports IPV6
-	// addresses.
-	HasIPV6 bool
-
-	// PieceDownloadStrategy chooses how to rank eligible pieces (see
-	// Strategy).
-	PieceDownloadStrategy PieceDownloadStrategy
-
-	// MaxInflightRequests is the per-peer cap the picker should respect
-	// when handing out requests to a single connection. The picker
-	// doesn’t enforce per-peer counters by itself — your peer loop
-	// should pass a view (capacity) and the picker should not exceed it.
-	MaxInflightRequests int
-
-	// RequestTimeout is the baseline time after which an in-flight block
-	// can be considered timed-out and re-assigned. You can adapt it
-	// per-peer using RTT.
-	RequestTimeout time.Duration
-
-	// EndgameDupPerBlock, when Endgame is enabled, caps the number of
-	// duplicate owners (peers concurrently fetching the same block).
-	EndgameDupPerBlock int
-
-	// MaxRequestsPerBlocks limit how many duplicate blocks can be requested
-	// from a single piece at once, preventing over-downloading of
-	// individual blocks.
-	MaxRequestsPerBlocks int
-
-	// MaxPeers is the maximum number of concurrent peer connections
-	// allowed.
-	MaxPeers int
-
-	// MaxInflightRequestsPerPeer limits how many requests can be
-	// outstanding to a single peer at once.
-	MaxInflightRequestsPerPeer int
-
-	// MaxRequestsPerPiece caps the number of duplicate requests for the
-	// same piece across all peers to prevent over-downloading.
-	MaxRequestsPerPiece int
-
-	// PeerHeartbeatInterval is how often to send keep-alive messages to
-	// peer to maintain the connection.
-	PeerHeartbeatInterval time.Duration
+	// ========== Networking ==========
 
 	// ReadTimeout is the maximum time to wait for data from a peer before
 	// considering the connection stalled.
@@ -132,47 +60,169 @@ type Config struct {
 	// connection to a peer.
 	DialTimeout time.Duration
 
-	// KeepAliveInterval is how often to check peer connection health and
-	// close idle connections.
-	KeepAliveInterval time.Duration
+	// MaxPeers is the maximum number of concurrent peer connections
+	// allowed.
+	MaxPeers int
+
+	// ========== Tracker / Announce ==========
+
+	// NumWant is the maximum number of peers to request the tracker.
+	NumWant uint32
+
+	// AnnounceInterval overrides tracker's suggested interval.
+	// 0 uses tracker default.
+	AnnounceInterval time.Duration
+
+	// MinAnnounceInterval enforces a minimum time between announces.
+	MinAnnounceInterval time.Duration
+
+	// MaxAnnounceBackoff caps exponential backoff for failed announces.
+	MaxAnnounceBackoff time.Duration
+
+	// Port is the TCP port this client listens on for incoming peer
+	// connections.
+	Port uint16
+
+	// =========== Rate Limits ==========
+
+	// MaxUploadRate limits upload speed in bytes/second. 0 = unlimited.
+	MaxUploadRate int64
+
+	// MaxDownloadRate limits download speed in bytes/second. 0 = unlimited.
+	MaxDownloadRate int64
+
+	// RateLimitRefresh controls fill cadence; keep >=100ms to avoid jitter.
+	RateLimitRefresh time.Duration
 
 	// PeerOutboundQueueBacklog is the maximum messages that peer can have
 	// in its buffer.
 	PeerOutboundQueueBacklog int
+
+	// ========== Piece Picker / Requests ==========
+
+	// PieceDownloadStrategy chooses how to rank eligible pieces.
+	PieceDownloadStrategy PieceDownloadStrategy
+
+	// MaxInflightRequestsPerPeer limits how many requests can be
+	// outstanding to a single peer at once.
+	MaxInflightRequestsPerPeer int
+
+	// MinInflightRequestsPerPeer is a soft floor so slow/latent peers still
+	// make progress (1–4 is typical). The controller will never drop below
+	// this.
+	MinInflightRequestsPerPeer int
+
+	// RequestQueueTime is the target amount of data (in seconds) to keep
+	// pipelined per peer (libtorrent: request_queue_time). The controller
+	// sizes the per-peer window ≈ ceil((peer_rate * RTT * RequestQueueTime)/block_size),
+	// clamped to [MinInflightRequestsPerPeer, MaxInflightRequestsPerPeer].
+	RequestQueueTime time.Duration
+
+	// RequestTimeout is the baseline time after which an in-flight block
+	// can be considered timed-out and re-assigned. You can adapt it
+	// per-peer using RTT.
+	RequestTimeout time.Duration
+
+	// EndgameDupPerBlock, when Endgame is enabled, caps the number of
+	// duplicate owners (peers concurrently fetching the same block).
+	EndgameDupPerBlock int
+
+	// EndgameEnabled toggled duplicate requests in endgame.
+	EndgameEnabled bool
+
+	// MaxRequestsPerPiece caps the number of duplicate requests for the
+	// same piece across all peers to prevent over-downloading.
+	MaxRequestsPerPiece int
+
+	// ========== Seeding / Choking ==========
+
+	// UploadSlots is the number of regular unchoke slots.
+	UploadSlots int
+
+	// RechokeInterval is the duration of how often to reevalute choke/unchoke
+	// decisions.
+	RechokeInterval time.Duration
+
+	// OptimisticUnchokeInterval is the duration of how often to rotate the
+	// optimistic unchoke.
+	OptimisticUnchokeInterval time.Duration
+
+	// ========== Keepalive / Heartbeats ==========
+
+	// PeerHeartbeatInterval is how often to send keep-alive messages to
+	// peer to maintain the connection.
+	PeerHeartbeatInterval time.Duration
+
+	// KeepAliveInterval is how often to check peer connection health and
+	// close idle connections.
+	KeepAliveInterval time.Duration
+
+	// ========== Miscellaneous ==========
+
+	// LogLevel is slog LogLevel
+	LogLevel string
+
+	// MetricsEnabled toggled Prom/OTel metrics endpoint.
+	MetricsEnabled bool
+
+	// MetricsBindAddr is the the HTTP address for metrics (e.g., ":9090")
+	MetricsBindAddr string
+
+	// EnableIPv6 allows connections to IPv6 peers.
+	EnableIPv6 bool
+
+	// EnableDHT enables DHT for peer discovery (future).
+	EnableDHT bool
+
+	// EnablePEX enables peer exchange protocol (future).
+	EnablePEX bool
+
+	// HasIPV6 keeps track of whether or not the system supports IPV6
+	// addresses.
+	HasIPV6 bool
 }
 
 // DefaultConfig returns sensible defaults for most use cases.
 func defaultConfig() Config {
 	downloadDir := getDefaultDownloadDir()
+	hasIPV6 := hasIPV6()
 
 	return Config{
 		DefaultDownloadDir:         downloadDir,
-		Port:                       6969,
+		ClientIDPrefix:             "-RBT001-",
+		ReadTimeout:                30 * time.Second,
+		WriteTimeout:               30 * time.Second,
+		DialTimeout:                7 * time.Second,
+		MaxPeers:                   50,
 		NumWant:                    50,
-		MaxUploadRate:              0, // unlimited
-		MaxDownloadRate:            0, // unlimited
-		AnnounceInterval:           0, // use tracker default
-		MinAnnounceInterval:        2 * time.Minute,
-		MaxAnnounceBackoff:         5 * time.Minute,
-		EnableIPv6:                 true,
+		AnnounceInterval:           0,
+		MinAnnounceInterval:        20 * time.Minute,
+		MaxAnnounceBackoff:         45 * time.Minute,
+		Port:                       6969,
+		MaxUploadRate:              0,
+		MaxDownloadRate:            0,
+		RateLimitRefresh:           200 * time.Millisecond,
+		PeerOutboundQueueBacklog:   256,
+		PieceDownloadStrategy:      PieceDownloadStrategyRarestFirst,
+		MaxInflightRequestsPerPeer: 32,
+		MinInflightRequestsPerPeer: 4,
+		RequestQueueTime:           3 * time.Second,
+		RequestTimeout:             25 * time.Second,
+		EndgameDupPerBlock:         2,
+		EndgameEnabled:             true,
+		MaxRequestsPerPiece:        128,
+		UploadSlots:                4,
+		RechokeInterval:            10 * time.Second,
+		OptimisticUnchokeInterval:  30 * time.Second,
+		PeerHeartbeatInterval:      60 * time.Second,
+		KeepAliveInterval:          90 * time.Second,
+		LogLevel:                   "info",
+		MetricsEnabled:             false,
+		MetricsBindAddr:            ":9090",
+		EnableIPv6:                 hasIPV6,
 		EnableDHT:                  false,
 		EnablePEX:                  false,
-		ClientIDPrefix:             "-RBBT001-",
-		HasIPV6:                    hasIPV6(),
-		MaxInflightRequests:        10,
-		RequestTimeout:             30 * time.Second,
-		EndgameDupPerBlock:         2,
-		MaxRequestsPerBlocks:       4,
-		PieceDownloadStrategy:      PieceDownloadStrategyRarestFirst,
-		MaxPeers:                   50,
-		MaxInflightRequestsPerPeer: 5,
-		MaxRequestsPerPiece:        4,
-		PeerHeartbeatInterval:      2 * time.Minute,
-		ReadTimeout:                45 * time.Second,
-		WriteTimeout:               45 * time.Second,
-		DialTimeout:                30 * time.Second,
-		KeepAliveInterval:          2 * time.Minute,
-		PeerOutboundQueueBacklog:   25,
+		HasIPV6:                    hasIPV6,
 	}
 }
 
@@ -219,12 +269,6 @@ func getDefaultDownloadDir() string {
 	case "darwin":
 		return filepath.Join(home, "Downloads", "rabbit")
 	default: // linux, bsd, etc.
-		return filepath.Join(
-			home,
-			".local",
-			"share",
-			"rabbit",
-			"downloads",
-		)
+		return filepath.Join(home, ".local", "share", "rabbit", "downloads")
 	}
 }
