@@ -5,68 +5,90 @@ import (
 	"math/bits"
 )
 
+// Bitfield represents a fixed-sized bitset. Bits are stored MSB-first within
+// each byte.
 type Bitfield []byte
 
-func New(n int) Bitfield {
-	size := (n + 7) / 8
-	if size < 0 {
-		size = 0
+// New returns a zerored bitfield able to hold nbits bits.
+// If nbits <= 0, New returns nil.
+func New(nbits int) Bitfield {
+	if nbits <= 0 {
+		return nil
 	}
 
-	return make(Bitfield, size)
+	return make(Bitfield, (nbits+7)/8)
 }
 
+// FromBytes returns a new Bitfield that copies b.
 func FromBytes(b []byte) Bitfield {
-	bf := make(Bitfield, len(b))
-	copy(bf, b)
-	return bf
+	return append(Bitfield(nil), b...)
 }
 
-func (bf Bitfield) ToBytes() []byte {
-	out := make([]byte, len(bf))
-	copy(out, bf)
-	return out
+// Bytes returns a copy of the underlying bytes.
+func (bf Bitfield) Bytes() []byte {
+	return append([]byte(nil), bf...)
 }
 
-func (bf Bitfield) Has(index int) bool {
-	byteIndex, offset := index/8, index%8
-	if byteIndex < 0 || byteIndex >= len(bf) {
+// Has reports whether bit at idx is set.
+//
+// Returns false if idx is out of range.
+func (bf Bitfield) Has(idx int) bool {
+	if idx < 0 || idx >= bf.Len() {
 		return false
 	}
-	return bf[byteIndex]>>(7-offset)&1 != 0
+
+	at, offset := idx/8, 7-(idx%8)
+	return (bf[at]>>offset)&1 == 1
 }
 
-func (bf Bitfield) Set(index int) {
-	byteIndex, offset := index/8, index%8
-	if byteIndex < 0 || byteIndex >= len(bf) {
-		return
+// Set sets bit at idx.
+//
+// Returns true if the bit was changed, false if out-of-range or already set.
+func (bf Bitfield) Set(idx int) bool {
+	if idx < 0 || idx >= bf.Len() {
+		return false
 	}
 
-	bf[byteIndex] |= 1 << (7 - offset)
+	at, offset := idx/8, 7-(idx%8)
+	mask := byte(1 << offset)
+	old := bf[at]
+	bf[at] = old | mask
+
+	return old&mask == 0
 }
 
-func (bf Bitfield) Clear(index int) {
-	byteIndex, offset := index/8, index%8
-	if byteIndex < 0 || byteIndex >= len(bf) {
-		return
+// Clear clears bit at idx.
+//
+// Returns true if the bit was changed, false if out-of-range or already set.
+func (bf Bitfield) Clear(idx int) bool {
+	if idx < 0 || idx >= bf.Len() {
+		return false
 	}
 
-	bf[byteIndex] &^= 1 << (7 - offset)
+	at, offset := idx/8, 7-(idx%8)
+	mask := byte(1 << offset)
+	old := bf[at]
+	bf[at] = old &^ mask
+
+	return old&mask != 0
 }
 
+// Len returns the number of addressable bits.
 func (bf Bitfield) Len() int { return len(bf) * 8 }
 
+// Count returns the number of set bits.
 func (bf Bitfield) Count() int {
-	c := 0
+	n := 0
 	for _, b := range bf {
-		c += bits.OnesCount8(b)
+		n += bits.OnesCount8(b)
 	}
 
-	return c
+	return n
 }
 
-func (bf Bitfield) Equals(other Bitfield) bool {
-	return bytes.Equal(bf, other)
+// Equals compares bitfields byte-wise.
+func (bf Bitfield) Equals(oth Bitfield) bool {
+	return bytes.Equal(bf, oth)
 }
 
 func (bf Bitfield) String() string {
