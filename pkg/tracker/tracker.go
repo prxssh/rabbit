@@ -76,11 +76,8 @@ type AnnounceResponse struct {
 type Event uint32
 
 const (
-	// EventNone is used for regular periodic announces.
-	EventNone Event = iota
-
 	// EventStarted signals the first announce after starting download.
-	EventStarted
+	EventStarted Event = iota
 
 	// EventStopped signals graceful shutdown (last chance to update stats).
 	EventStopped
@@ -91,30 +88,20 @@ const (
 
 func (e Event) String() string {
 	switch e {
-	case EventStarted:
-		return "started"
 	case EventStopped:
 		return "stopped"
 	case EventCompleted:
 		return "completed"
 	default:
-		return ""
+		return "started"
 	}
 }
-
-const (
-	strideV4 = 6
-	strideV6 = 18
-)
 
 // TrackerProtocol abstracts HTTP, UDP, and potential future protocols.
 type TrackerProtocol interface {
 	// Announce performs a single announce request with timeout and returns
 	// peer list or error.
-	Announce(
-		ctx context.Context,
-		params *AnnounceParams,
-	) (*AnnounceResponse, error)
+	Announce(ctx context.Context, params *AnnounceParams) (*AnnounceResponse, error)
 }
 
 // Stats provides runtime metrics about tracker operation.
@@ -172,11 +159,7 @@ type Tracker struct {
 // The announceList is an optional tier list (from announce-list extension).
 //
 // Returns error if no valid URLs can be parsed.
-func NewTracker(
-	announce string,
-	announceList [][]string,
-	log *slog.Logger,
-) (*Tracker, error) {
+func NewTracker(announce string, announceList [][]string, log *slog.Logger) (*Tracker, error) {
 	tiers, err := buildAnnounceURLs(announce, announceList)
 	if err != nil {
 		return nil, err
@@ -221,10 +204,7 @@ func (t *Tracker) Run(ctx context.Context) error {
 // hammering multiple endpoints simultaneously).
 //
 // Returns the first successful response or the last error encountered.
-func (t *Tracker) Announce(
-	ctx context.Context,
-	params *AnnounceParams,
-) (*AnnounceResponse, error) {
+func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*AnnounceResponse, error) {
 	t.stats.TotalAnnounces.Add(1)
 	t.stats.LastAnnounce.Store(time.Now().Unix())
 
@@ -254,8 +234,7 @@ func (t *Tracker) Announce(
 			t.stats.CurrentSeeders.Store(resp.Seeders)
 			t.stats.CurrentLeechers.Store(resp.Leechers)
 
-			t.log.Info(
-				"announce.success",
+			t.log.Info("announce success",
 				"tier", tierIdx,
 				"url", u.String(),
 				"peers", len(resp.Peers),
@@ -266,7 +245,7 @@ func (t *Tracker) Announce(
 			return resp, nil
 		}
 
-		t.log.Warn("announce.tier.exhausted", "tier", tierIdx)
+		t.log.Warn("announce tier exhausted", "tier", tierIdx)
 	}
 
 	t.stats.FailedAnnounces.Add(1)
@@ -302,11 +281,10 @@ func (t *Tracker) promoteWithinTier(tierIdx, urlIdx int) {
 	copy(tier[1:urlIdx+1], tier[0:urlIdx])
 	tier[0] = u
 
-	t.log.Debug(
-		"announce.promote",
-		slog.Int("tier", tierIdx),
-		slog.Int("from", urlIdx),
-		slog.String("url", u.String()),
+	t.log.Debug("announce promote",
+		"tier", tierIdx,
+		"from", urlIdx,
+		"url", u.String(),
 	)
 }
 
@@ -320,11 +298,7 @@ func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 		return tr, nil
 	}
 
-	ul := t.log.With(
-		"scheme", u.Scheme,
-		"host", u.Host,
-		"path", u.EscapedPath(),
-	)
+	log := t.log.With("scheme", u.Scheme, "host", u.Host, "path", u.EscapedPath())
 
 	var (
 		tracker TrackerProtocol
@@ -333,15 +307,9 @@ func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 
 	switch u.Scheme {
 	case "http", "https":
-		tracker, err = NewHTTPTracker(
-			u,
-			ul.With("component", "tracker.http"),
-		)
+		tracker, err = NewHTTPTracker(u, log)
 	case "udp":
-		tracker, err = NewUDPTracker(
-			u,
-			ul.With("component", "tracker.udp"),
-		)
+		tracker, err = NewUDPTracker(u, log)
 	default:
 		err = fmt.Errorf("tracker: unsupported schema %q", u.Scheme)
 	}
@@ -354,15 +322,12 @@ func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 	t.trackers[key] = tracker
 	t.mu.Unlock()
 
-	t.log.Debug("tracker.cached")
+	t.log.Debug("tracker cached")
 
 	return tracker, nil
 }
 
-func buildAnnounceURLs(
-	announce string,
-	announceList [][]string,
-) ([][]*url.URL, error) {
+func buildAnnounceURLs(announce string, announceList [][]string) ([][]*url.URL, error) {
 	tiers := make([][]*url.URL, 0, len(announceList))
 
 	if s := strings.TrimSpace(announce); s != "" {

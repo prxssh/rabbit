@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/prxssh/rabbit/pkg/config"
 	"github.com/prxssh/rabbit/pkg/torrent"
 	"github.com/prxssh/rabbit/pkg/utils/logging"
 	"github.com/wailsapp/wails/v2"
@@ -17,6 +18,7 @@ import (
 var assets embed.FS
 
 func main() {
+	config.Init()
 	setupLogger()
 
 	client, err := torrent.NewClient()
@@ -43,7 +45,7 @@ func main() {
 
 func setupLogger() {
 	opts := logging.DefaultOptions()
-	opts.SlogOpts.Level = slog.LevelDebug
+	opts.SlogOpts.Level = config.Load().LogLevel
 	opts.SlogOpts.AddSource = false
 
 	h := logging.NewPrettyHandler(os.Stdout, &opts)

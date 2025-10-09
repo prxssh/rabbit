@@ -2,23 +2,21 @@ package tracker
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net/netip"
+)
+
+const (
+	strideV4 = 6  // 4 bytes IP + 2 bytes port
+	strideV6 = 18 // 16 bytes IP + 2 bytes port
 )
 
 func decodePeers(v any, ipv6 bool) ([]netip.AddrPort, error) {
 	switch t := v.(type) {
 	case string:
-		if ipv6 {
-			return decodeCompactPeersV6([]byte(t))
-		}
-		return decodeCompactPeersV4([]byte(t))
+		return decodeCompact([]byte(t), ipv6)
 	case []byte:
-		if ipv6 {
-			return decodeCompactPeersV6(t)
-		}
-		return decodeCompactPeersV4(t)
+		return decodeCompact(t, ipv6)
 	case []any:
 		return decodeDictPeers(t)
 	default:
@@ -26,43 +24,41 @@ func decodePeers(v any, ipv6 bool) ([]netip.AddrPort, error) {
 	}
 }
 
-func decodeCompactPeersV4(b []byte) ([]netip.AddrPort, error) {
-	if len(b)%strideV4 != 0 {
-		return nil, errors.New("peer length not multiple of 6")
+func decodeCompact(data []byte, ipv6 bool) ([]netip.AddrPort, error) {
+	if ipv6 {
+		return decodeCompactPeers(data, strideV6, func(chunk []byte) netip.AddrPort {
+			var a16 [16]byte
+			copy(a16[:], chunk[:16])
+
+			a := netip.AddrFrom16(a16)
+			p := binary.BigEndian.Uint16(chunk[16:18])
+			return netip.AddrPortFrom(a, p)
+		})
 	}
 
-	n := len(b) / strideV4
-	peers := make([]netip.AddrPort, n)
-
-	for i, off := 0, 0; i < n; i, off = i+1, off+strideV4 {
-		a := netip.AddrFrom4(
-			[4]byte{b[off], b[off+1], b[off+2], b[off+3]},
-		)
-		p := binary.BigEndian.Uint16(b[off+4 : off+6])
-		peers[i] = netip.AddrPortFrom(a, p)
-	}
-
-	return peers, nil
+	return decodeCompactPeers(data, strideV4, func(chunk []byte) netip.AddrPort {
+		a := netip.AddrFrom4([4]byte{chunk[0], chunk[1], chunk[2], chunk[3]})
+		p := binary.BigEndian.Uint16(chunk[4:6])
+		return netip.AddrPortFrom(a, p)
+	})
 }
 
-func decodeCompactPeersV6(b []byte) ([]netip.AddrPort, error) {
-	if len(b)%strideV6 != 0 {
-		return nil, errors.New("peer length not multiple of 18")
+func decodeCompactPeers(
+	data []byte,
+	stride int,
+	decodeFunc func([]byte) netip.AddrPort,
+) ([]netip.AddrPort, error) {
+	if len(data)%stride != 0 {
+		return nil, fmt.Errorf("malformed or invalid compact peers")
 	}
 
-	n := len(b) / strideV6
-	peers := make([]netip.AddrPort, n)
-
-	for i, off := 0, 0; i < n; i, off = i+1, off+strideV6 {
-		var a16 [16]byte
-		copy(a16[:], b[off:off+16])
-
-		a := netip.AddrFrom16(a16)
-		p := binary.BigEndian.Uint16(b[off+16 : off+18])
-		peers[i] = netip.AddrPortFrom(a, p)
+	n := len(data) / stride
+	out := make([]netip.AddrPort, n)
+	for i, off := 0, 0; i < n; i, off = i+1, off+stride {
+		out[i] = decodeFunc(data[off : off+stride])
 	}
 
-	return peers, nil
+	return out, nil
 }
 
 func decodeDictPeers(list []any) ([]netip.AddrPort, error) {
@@ -82,12 +78,13 @@ func decodeDictPeers(list []any) ([]netip.AddrPort, error) {
 			if err != nil {
 				return nil, fmt.Errorf("peer[%d]: bad ip %q: %w", i, ipv, err)
 			}
+
 			addr = a
 		case []byte:
 			switch len(ipv) {
-			case 4:
+			case strideV4:
 				addr = netip.AddrFrom4([4]byte{ipv[0], ipv[1], ipv[2], ipv[3]})
-			case 16:
+			case strideV6:
 				var a16 [16]byte
 				copy(a16[:], ipv)
 				addr = netip.AddrFrom16(a16)
@@ -100,11 +97,7 @@ func decodeDictPeers(list []any) ([]netip.AddrPort, error) {
 
 		p64, ok := m["port"].(int64)
 		if !ok || p64 < 1 || p64 > 65535 {
-			return nil, fmt.Errorf(
-				"peer[%d]: invalid port %v",
-				i,
-				m["port"],
-			)
+			return nil, fmt.Errorf("peer[%d]: invalid port %v", i, m["port"])
 		}
 
 		peers = append(peers, netip.AddrPortFrom(addr, uint16(p64)))
