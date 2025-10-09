@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -160,7 +161,7 @@ type Config struct {
 	// ========== Miscellaneous ==========
 
 	// LogLevel is slog LogLevel
-	LogLevel string
+	LogLevel slog.Level
 
 	// MetricsEnabled toggled Prom/OTel metrics endpoint.
 	MetricsEnabled bool
@@ -216,7 +217,7 @@ func defaultConfig() Config {
 		OptimisticUnchokeInterval:  30 * time.Second,
 		PeerHeartbeatInterval:      60 * time.Second,
 		KeepAliveInterval:          90 * time.Second,
-		LogLevel:                   "info",
+		LogLevel:                   slog.LevelDebug,
 		MetricsEnabled:             false,
 		MetricsBindAddr:            ":9090",
 		EnableIPv6:                 hasIPV6,

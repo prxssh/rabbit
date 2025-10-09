@@ -42,9 +42,7 @@ type UDPTracker struct {
 }
 
 func NewUDPTracker(url *url.URL, log *slog.Logger) (*UDPTracker, error) {
-	if log == nil {
-		log = slog.Default()
-	}
+	log = log.With("type", "udp")
 
 	addr, err := net.ResolveUDPAddr("udp", url.Host)
 	if err != nil {
@@ -87,24 +85,18 @@ func (ut *UDPTracker) Announce(
 		if time.Now().After(ut.connIDTTL) {
 			transactionID, err := randU32()
 			if err != nil {
-				ut.log.Warn("udp connect txid rand error",
-					"error", err.Error(),
-				)
+				ut.log.Warn("udp connect txid rand error", "error", err)
 				continue
 			}
 
 			if err := ut.sendConnectPacket(transactionID); err != nil {
-				ut.log.Warn("udp connect send error",
-					"error", err.Error(),
-				)
+				ut.log.Warn("udp connect send error", "error", err)
 				continue
 			}
 
 			connID, err := ut.readConnectPacket(transactionID)
 			if err != nil {
-				ut.log.Warn("udp connect read error",
-					"err", err.Error(),
-				)
+				ut.log.Warn("udp connect read error", "err", err)
 				continue
 			}
 			ut.connID = connID
@@ -113,21 +105,13 @@ func (ut *UDPTracker) Announce(
 
 		transactionID, err := randU32()
 		if err != nil {
-			ut.log.Warn("udp announce txid rand error",
-				"error", err.Error(),
-			)
+			ut.log.Warn("udp announce txid rand error", "error", err)
 			continue
 		}
 
 		start := time.Now()
-		if err := ut.sendAnnouncePacket(
-			transactionID,
-			ut.connID,
-			params,
-		); err != nil {
-			ut.log.Warn("udp announce send error",
-				"error", err.Error(),
-			)
+		if err := ut.sendAnnouncePacket(transactionID, ut.connID, params); err != nil {
+			ut.log.Warn("udp announce send error", "error", err)
 			continue
 		}
 
@@ -138,16 +122,15 @@ func (ut *UDPTracker) Announce(
 				errors.Is(err, errTransactionIDMismatch) {
 				ut.connIDTTL = time.Time{}
 
-				ut.log.Warn("udp announce protocol mismatch",
-					"error", err.Error(),
-					"retry", n+1,
+				ut.log.Warn(
+					"udp announce protocol mismatch",
+					"error",
+					err,
+					"retry",
+					n+1,
 				)
 			} else {
-				ut.log.Warn("udp announce read error",
-					"latency", lat,
-					"err", err.Error(),
-					"retry", n+1,
-				)
+				ut.log.Warn("udp announce read error", "latency", lat, "err", err, "retry", n+1)
 			}
 			continue
 		}
@@ -171,9 +154,7 @@ func (ut *UDPTracker) sendConnectPacket(transactionID uint32) error {
 	return nil
 }
 
-func (ut *UDPTracker) readConnectPacket(
-	transactionID uint32,
-) (uint64, error) {
+func (ut *UDPTracker) readConnectPacket(transactionID uint32) (uint64, error) {
 	var packet [16]byte
 
 	nread, err := ut.conn.Read(packet[:])

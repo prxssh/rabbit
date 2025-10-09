@@ -24,9 +24,7 @@ type HTTPTracker struct {
 }
 
 func NewHTTPTracker(url *url.URL, log *slog.Logger) (*HTTPTracker, error) {
-	if log == nil {
-		log = slog.Default()
-	}
+	log = log.With("type", "http")
 
 	t := &http.Transport{
 		MaxIdleConns:          100,
@@ -125,10 +123,7 @@ func parseAnnounceResponse(r io.Reader) (*AnnounceResponse, error) {
 	}
 	dict, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf(
-			"tracker: announce expected dict but got %T",
-			raw,
-		)
+		return nil, fmt.Errorf("tracker: announce expected dict but got %T", raw)
 	}
 
 	if failure, ok := dict["failure reason"].(string); ok {

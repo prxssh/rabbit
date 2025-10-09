@@ -168,12 +168,7 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 	if len(attrs) > 0 {
 		buf.WriteString(h.opts.FieldSeparator)
 		if err := h.formatAttributes(buf, attrs); err != nil {
-			buf.WriteString(
-				fmt.Sprintf(
-					"(error formatting attributes: %v)",
-					err,
-				),
-			)
+			buf.WriteString(fmt.Sprintf("(error formatting attributes: %v)", err))
 		}
 	}
 
@@ -269,9 +264,7 @@ func (h *PrettyHandler) extractSource(pc uintptr) string {
 	return source
 }
 
-func (h *PrettyHandler) collectAttributes(
-	r slog.Record,
-) map[string]any {
+func (h *PrettyHandler) collectAttributes(r slog.Record) map[string]any {
 	attrs := make(map[string]any)
 
 	current := attrs
@@ -295,10 +288,7 @@ func (h *PrettyHandler) collectAttributes(
 	return attrs
 }
 
-func (h *PrettyHandler) addAttribute(
-	attrs map[string]any,
-	attr slog.Attr,
-) {
+func (h *PrettyHandler) addAttribute(attrs map[string]any, attr slog.Attr) {
 	value := attr.Value.Resolve()
 
 	if value.Kind() == slog.KindGroup {
@@ -321,8 +311,7 @@ func (h *PrettyHandler) addAttribute(
 	case slog.KindAny:
 		v = value.Any()
 		if h.opts.MaxFieldLength > 0 {
-			if str, ok := v.(string); ok &&
-				len(str) > h.opts.MaxFieldLength {
+			if str, ok := v.(string); ok && len(str) > h.opts.MaxFieldLength {
 				v = str[:h.opts.MaxFieldLength] + "..."
 			}
 		}
@@ -344,10 +333,7 @@ func (h *PrettyHandler) cleanEmptyGroups(attrs map[string]any) {
 	}
 }
 
-func (h *PrettyHandler) formatAttributes(
-	buf *bytes.Buffer,
-	attrs map[string]any,
-) error {
+func (h *PrettyHandler) formatAttributes(buf *bytes.Buffer, attrs map[string]any) error {
 	if len(attrs) == 0 {
 		return nil
 	}

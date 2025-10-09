@@ -2,7 +2,6 @@ package torrent
 
 import (
 	"crypto/sha1"
-	"errors"
 	"fmt"
 	"time"
 
@@ -37,27 +36,17 @@ type File struct {
 }
 
 var (
-	ErrTopLevelNotDict = errors.New("metainfo: top-level is not a dict")
-	ErrAnnounceMissing = errors.New(
-		"metainfo: both announce and announce-list missing",
-	)
-	ErrInfoMissing     = errors.New("metainfo: 'info' missing")
-	ErrInfoNotDict     = errors.New("metainfo: 'info' is not a dict")
-	ErrNameMissing     = errors.New("metainfo: 'info' name missing")
-	ErrPieceLenMissing = errors.New(
-		"metainfo: 'info' piece length missing",
-	)
-	ErrPieceLenNonPositive = errors.New(
-		"metainfo: 'info' piece length must be > 0",
-	)
-	ErrPiecesMissing    = errors.New("metainfo: 'info' pieces missing")
-	ErrPiecesLenInvalid = errors.New(
-		"metainfo: 'info' pieces length not multiple of 20",
-	)
-	ErrLayoutInvalid = errors.New(
-		"metainfo: invalid single/multi-file layout",
-	)
-	ErrCreationDateInvalid = errors.New("metainfo: invalid creation date")
+	ErrTopLevelNotDict     = fmt.Errorf("metainfo: top-level is not a dict")
+	ErrAnnounceMissing     = fmt.Errorf("metainfo: both announce and announce-list missing")
+	ErrInfoMissing         = fmt.Errorf("metainfo: 'info' missing")
+	ErrInfoNotDict         = fmt.Errorf("metainfo: 'info' is not a dict")
+	ErrNameMissing         = fmt.Errorf("metainfo: 'info' name missing")
+	ErrPieceLenMissing     = fmt.Errorf("metainfo: 'info' piece length missing")
+	ErrPieceLenNonPositive = fmt.Errorf("metainfo: 'info' piece length must be > 0")
+	ErrPiecesMissing       = fmt.Errorf("metainfo: 'info' pieces missing")
+	ErrPiecesLenInvalid    = fmt.Errorf("metainfo: 'info' pieces length not multiple of 20")
+	ErrLayoutInvalid       = fmt.Errorf("metainfo: invalid single/multi-file layout")
+	ErrCreationDateInvalid = fmt.Errorf("metainfo: invalid creation date")
 )
 
 func (m *Metainfo) Size() int64 {
@@ -219,40 +208,25 @@ func parseFiles(v any) ([]*File, error) {
 	for i, it := range arr {
 		m, ok := it.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf(
-				"metainfo: files[%d]: not a dict",
-				i,
-			)
+			return nil, fmt.Errorf("metainfo: files[%d]: not a dict", i)
 		}
 
 		fl, ok := m["length"]
 		if !ok {
-			return nil, fmt.Errorf(
-				"metainfo: files[%d]: length missing",
-				i,
-			)
+			return nil, fmt.Errorf("metainfo: files[%d]: length missing", i)
 		}
 		ln, err := cast.ToInt(fl)
 		if err != nil || ln < 0 {
-			return nil, fmt.Errorf(
-				"metainfo: files[%d]: invalid length",
-				i,
-			)
+			return nil, fmt.Errorf("metainfo: files[%d]: invalid length", i)
 		}
 
 		rawPath, ok := m["path"]
 		if !ok {
-			return nil, fmt.Errorf(
-				"metainfo: files[%d]: path missing",
-				i,
-			)
+			return nil, fmt.Errorf("metainfo: files[%d]: path missing", i)
 		}
 		segments, err := cast.ToStringSlice(rawPath)
 		if err != nil || len(segments) == 0 {
-			return nil, fmt.Errorf(
-				"metainfo: files[%d]: invalid path",
-				i,
-			)
+			return nil, fmt.Errorf("metainfo: files[%d]: invalid path", i)
 		}
 
 		files = append(files, &File{Length: ln, Path: segments})
@@ -267,16 +241,11 @@ func parseAnnounceList(v any) ([][]string, error) {
 	}
 	raw, ok := v.([]any)
 	if !ok {
-		return [][]string{}, fmt.Errorf(
-			"metainfo: invalid announce-list",
-		)
+		return [][]string{}, fmt.Errorf("metainfo: invalid announce-list")
 	}
 	tiered, err := cast.ToTieredStrings(raw)
 	if err != nil {
-		return [][]string{}, fmt.Errorf(
-			"metainfo: invalid announce-list: %w",
-			err,
-		)
+		return [][]string{}, fmt.Errorf("metainfo: invalid announce-list: %w", err)
 	}
 
 	out := make([][]string, 0, len(tiered))

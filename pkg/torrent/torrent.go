@@ -27,8 +27,6 @@ type Client struct {
 }
 
 func NewClient() (*Client, error) {
-	config.Init()
-
 	log := slog.Default().With("src", "torrent_client")
 
 	clientID, err := generateClientID()
@@ -37,11 +35,7 @@ func NewClient() (*Client, error) {
 		return nil, err
 	}
 
-	log.Info(
-		"client initialized",
-		"client_id",
-		hex.EncodeToString(clientID[:8]),
-	)
+	log.Info("client initialized", "client_id", hex.EncodeToString(clientID[:]))
 
 	return &Client{
 		torrents: make(map[[sha1.Size]byte]*Torrent),
@@ -57,19 +51,13 @@ func (c *Client) Startup(ctx context.Context) {
 func (c *Client) AddTorrent(data []byte) (*Torrent, error) {
 	torrent, err := NewTorrent(c.clientID, data)
 	if err != nil {
-		c.log.Error(
-			"failed to parse torrent",
-			"error",
-			err,
-			"size",
-			len(data),
-		)
+		c.log.Error("failed to parse torrent", "error", err, "size", len(data))
 		return nil, err
 	}
 
 	infoHashHex := hex.EncodeToString(torrent.Metainfo.Info.Hash[:])
-	c.log.Info(
-		"adding torrent",
+
+	c.log.Debug("adding torrent",
 		"name", torrent.Metainfo.Info.Name,
 		"info_hash", infoHashHex,
 		"size", torrent.Size,
@@ -89,13 +77,7 @@ func (c *Client) RemoveTorrent(infoHashHex string) error {
 
 	bytes, err := hex.DecodeString(infoHashHex)
 	if err != nil || len(bytes) != sha1.Size {
-		c.log.Error(
-			"invalid info hash",
-			"hash",
-			infoHashHex,
-			"error",
-			err,
-		)
+		c.log.Error("invalid info hash", "hash", infoHashHex, "error", err)
 		return err
 	}
 	copy(infoHash[:], bytes)
@@ -109,10 +91,12 @@ func (c *Client) RemoveTorrent(infoHashHex string) error {
 		return nil
 	}
 
-	c.log.Info(
+	c.log.Debug(
 		"removing torrent",
-		"name", torrent.Metainfo.Info.Name,
-		"info_hash", infoHashHex,
+		"name",
+		torrent.Metainfo.Info.Name,
+		"info_hash",
+		infoHashHex,
 	)
 
 	torrent.Stop()
@@ -140,12 +124,9 @@ func (c *Client) GetTorrentStats(infoHashHex string) *Stats {
 }
 
 func (c *Client) SelectDownloadDirectory() (string, error) {
-	path, err := runtime.OpenDirectoryDialog(
-		c.ctx,
-		runtime.OpenDialogOptions{
-			Title: "Select Download Directory",
-		},
-	)
+	path, err := runtime.OpenDirectoryDialog(c.ctx, runtime.OpenDialogOptions{
+		Title: "Select Download Directory",
+	})
 	if err != nil {
 		return "", err
 	}
@@ -191,10 +172,7 @@ type Torrent struct {
 	refillPeerQ chan struct{}
 }
 
-func NewTorrent(
-	clientID [sha1.Size]byte,
-	data []byte,
-) (*Torrent, error) {
+func NewTorrent(clientID [sha1.Size]byte, data []byte) (*Torrent, error) {
 	metainfo, err := ParseMetainfo(data)
 	if err != nil {
 		return nil, err
@@ -203,11 +181,7 @@ func NewTorrent(
 
 	log := slog.Default().With("torrent", metainfo.Info.Name)
 
-	tracker, err := tracker.NewTracker(
-		metainfo.Announce,
-		metainfo.AnnounceList,
-		log,
-	)
+	tracker, err := tracker.NewTracker(metainfo.Announce, metainfo.AnnounceList, log)
 	if err != nil {
 		return nil, err
 	}
@@ -259,28 +233,20 @@ func (t *Torrent) Run(ctx context.Context) error {
 				if !ok {
 					return nil
 				}
-				resp, err := t.tracker.Announce(
-					ctx,
-					t.buildAnnounceParams(),
-				)
+
+				resp, err := t.tracker.Announce(ctx, t.buildAnnounceParams())
 				if err != nil {
-					t.log.Error(
-						"failed refill peer",
-						"error", err,
-					)
+					t.log.Error("failed refill peer", "error", err)
 					continue
 				}
-				t.log.Debug(
-					"refilled peers",
-					"count", len(resp.Peers),
-				)
+
 				t.peerManager.AdmitPeers(resp.Peers)
 			}
 		}
 	})
 
 	err := eg.Wait()
-	t.log.Info("torrent stopped", "error", err)
+	t.log.Debug("torrent stopped", "error", err)
 	return err
 }
 
@@ -332,10 +298,7 @@ func (t *Torrent) announceLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			stopCtx, cancel := context.WithTimeout(
-				context.Background(),
-				10*time.Second,
-			)
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			announceParams := t.buildAnnounceParams()
@@ -344,18 +307,11 @@ func (t *Torrent) announceLoop(ctx context.Context) error {
 
 			return ctx.Err()
 		case <-ticker.C:
-			resp, err := t.tracker.Announce(
-				ctx,
-				t.buildAnnounceParams(),
-			)
+			resp, err := t.tracker.Announce(ctx, t.buildAnnounceParams())
 			if err != nil {
 				consecutiveFailures++
-				backoff := t.calculateBackoff(
-					consecutiveFailures,
-					maxBackoffShift,
-				)
-				t.log.Error(
-					"announce failed",
+				backoff := t.calculateBackoff(consecutiveFailures, maxBackoffShift)
+				t.log.Error("announce failed",
 					"error", err,
 					"failures", consecutiveFailures,
 					"retry_in", backoff,
@@ -366,13 +322,14 @@ func (t *Torrent) announceLoop(ctx context.Context) error {
 			}
 
 			consecutiveFailures = 0
-			t.log.Debug(
-				"announce successful",
+
+			t.log.Debug("announce successful",
 				"peers", len(resp.Peers),
 				"interval", resp.Interval,
 				"seeders", resp.Seeders,
 				"leechers", resp.Leechers,
 			)
+
 			t.peerManager.AdmitPeers(resp.Peers)
 			interval := t.getNextAnnounceInterval(resp)
 
@@ -401,9 +358,7 @@ func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
 	}
 }
 
-func (t *Torrent) getNextAnnounceInterval(
-	resp *tracker.AnnounceResponse,
-) time.Duration {
+func (t *Torrent) getNextAnnounceInterval(resp *tracker.AnnounceResponse) time.Duration {
 	interval := config.Load().AnnounceInterval
 	if interval == 0 {
 		interval = 2 * time.Minute
@@ -455,10 +410,7 @@ func generateClientID() ([sha1.Size]byte, error) {
 	return peerID, nil
 }
 
-func newPieceManager(
-	metainfo *Metainfo,
-	log *slog.Logger,
-) (*piece.Manager, error) {
+func newPieceManager(metainfo *Metainfo, log *slog.Logger) (*piece.Manager, error) {
 	size := metainfo.Size()
 
 	var (

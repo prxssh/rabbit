@@ -54,14 +54,9 @@ func TestParseMetainfo_SingleFile_OK(t *testing.T) {
 
 	wantDate := time.Unix(1700000000, 0).UTC()
 	if !mi.CreationDate.Equal(wantDate) {
-		t.Fatalf(
-			"creation date = %v, want %v",
-			mi.CreationDate,
-			wantDate,
-		)
+		t.Fatalf("creation date = %v, want %v", mi.CreationDate, wantDate)
 	}
-	if mi.CreatedBy != "tester" || mi.Comment != "hello" ||
-		mi.Encoding != "UTF-8" {
+	if mi.CreatedBy != "tester" || mi.Comment != "hello" || mi.Encoding != "UTF-8" {
 		t.Fatalf("metadata fields mismatch: %#v", mi)
 	}
 
@@ -78,11 +73,7 @@ func TestParseMetainfo_SingleFile_OK(t *testing.T) {
 		t.Fatalf("pieces len = %d, want 2", len(mi.Info.Pieces))
 	}
 	if mi.Info.Length != 1234 || len(mi.Info.Files) != 0 {
-		t.Fatalf(
-			"layout mismatch: length=%d files=%d",
-			mi.Info.Length,
-			len(mi.Info.Files),
-		)
+		t.Fatalf("layout mismatch: length=%d files=%d", mi.Info.Length, len(mi.Info.Files))
 	}
 
 	// Verify info hash
@@ -136,15 +127,8 @@ func TestParseMetainfo_MultiFile_OK(t *testing.T) {
 	if got := mi.Info.Files[0].Length; got != 10 {
 		t.Fatalf("file0 length = %d", got)
 	}
-	if want := []string{"a", "b.txt"}; !reflect.DeepEqual(
-		mi.Info.Files[0].Path,
-		want,
-	) {
-		t.Fatalf(
-			"file0 path = %#v, want %#v",
-			mi.Info.Files[0].Path,
-			want,
-		)
+	if want := []string{"a", "b.txt"}; !reflect.DeepEqual(mi.Info.Files[0].Path, want) {
+		t.Fatalf("file0 path = %#v, want %#v", mi.Info.Files[0].Path, want)
 	}
 }
 
@@ -228,8 +212,7 @@ func TestParseMetainfo_FieldValidationErrors(t *testing.T) {
 		"creation date": int64(-1),
 	}
 	data, _ := bencode.Marshal(root)
-	if _, err := ParseMetainfo(data); err == nil ||
-		err != ErrCreationDateInvalid {
+	if _, err := ParseMetainfo(data); err == nil || err != ErrCreationDateInvalid {
 		t.Fatalf("want ErrCreationDateInvalid, got %v", err)
 	}
 
@@ -260,40 +243,34 @@ func TestParseInfo_ValidationErrors(t *testing.T) {
 	}
 
 	// Non-positive piece length
-	_, err = parseInfo(
-		map[string]any{
-			"name":         "f",
-			"piece length": int64(0),
-			"pieces":       mkPieces(1),
-			"length":       int64(1),
-		},
-	)
+	_, err = parseInfo(map[string]any{
+		"name":         "f",
+		"piece length": int64(0),
+		"pieces":       mkPieces(1),
+		"length":       int64(1),
+	})
 	if err == nil || err != ErrPieceLenNonPositive {
 		t.Fatalf("want ErrPieceLenNonPositive, got %v", err)
 	}
 
 	// Missing pieces
-	_, err = parseInfo(
-		map[string]any{
-			"name":         "f",
-			"piece length": int64(1),
-			"length":       int64(1),
-		},
-	)
+	_, err = parseInfo(map[string]any{
+		"name":         "f",
+		"piece length": int64(1),
+		"length":       int64(1),
+	})
 	if err == nil || err != ErrPiecesMissing {
 		t.Fatalf("want ErrPiecesMissing, got %v", err)
 	}
 
 	// Invalid private flag
-	_, err = parseInfo(
-		map[string]any{
-			"name":         "f",
-			"piece length": int64(1),
-			"pieces":       mkPieces(1),
-			"length":       int64(1),
-			"private":      int64(2),
-		},
-	)
+	_, err = parseInfo(map[string]any{
+		"name":         "f",
+		"piece length": int64(1),
+		"pieces":       mkPieces(1),
+		"length":       int64(1),
+		"private":      int64(2),
+	})
 	if err == nil || !contains(err.Error(), "invalid 'private'") {
 		t.Fatalf("want invalid private flag, got %v", err)
 	}
@@ -304,35 +281,29 @@ func TestParseInfo_ValidationErrors(t *testing.T) {
 		"piece length": int64(1),
 		"pieces":       mkPieces(1),
 		"length":       int64(1),
-		"files": []any{
-			map[string]any{"length": int64(1), "path": []any{"a"}},
-		},
+		"files":        []any{map[string]any{"length": int64(1), "path": []any{"a"}}},
 	})
 	if err == nil || err != ErrLayoutInvalid {
 		t.Fatalf("want ErrLayoutInvalid, got %v", err)
 	}
 
 	// Layout invalid: neither length nor files
-	_, err = parseInfo(
-		map[string]any{
-			"name":         "f",
-			"piece length": int64(1),
-			"pieces":       mkPieces(1),
-		},
-	)
+	_, err = parseInfo(map[string]any{
+		"name":         "f",
+		"piece length": int64(1),
+		"pieces":       mkPieces(1),
+	})
 	if err == nil || err != ErrLayoutInvalid {
 		t.Fatalf("want ErrLayoutInvalid, got %v", err)
 	}
 
 	// Invalid length
-	_, err = parseInfo(
-		map[string]any{
-			"name":         "f",
-			"piece length": int64(1),
-			"pieces":       mkPieces(1),
-			"length":       int64(-1),
-		},
-	)
+	_, err = parseInfo(map[string]any{
+		"name":         "f",
+		"piece length": int64(1),
+		"pieces":       mkPieces(1),
+		"length":       int64(-1),
+	})
 	if err == nil || !contains(err.Error(), "invalid 'length'") {
 		t.Fatalf("want invalid length, got %v", err)
 	}
@@ -350,8 +321,7 @@ func TestParseFiles_Errors(t *testing.T) {
 	}
 
 	// Element not a dict
-	if _, err := parseFiles([]any{"x"}); err == nil ||
-		!contains(err.Error(), "not a dict") {
+	if _, err := parseFiles([]any{"x"}); err == nil || !contains(err.Error(), "not a dict") {
 		t.Fatalf("want element not dict, got %v", err)
 	}
 
@@ -380,12 +350,10 @@ func TestParsePieces_Errors(t *testing.T) {
 	if _, err := parsePieces(nil); err == nil || err != ErrPiecesMissing {
 		t.Fatalf("want ErrPiecesMissing, got %v", err)
 	}
-	if _, err := parsePieces(123); err == nil ||
-		!contains(err.Error(), "'pieces'") {
+	if _, err := parsePieces(123); err == nil || !contains(err.Error(), "'pieces'") {
 		t.Fatalf("want pieces type error, got %v", err)
 	}
-	if _, err := parsePieces([]byte("short")); err == nil ||
-		err != ErrPiecesLenInvalid {
+	if _, err := parsePieces([]byte("short")); err == nil || err != ErrPiecesLenInvalid {
 		t.Fatalf("want ErrPiecesLenInvalid, got %v", err)
 	}
 }
@@ -428,8 +396,6 @@ func TestSize(t *testing.T) {
 }
 
 // contains is a tiny helper to avoid importing strings everywhere
-func contains(
-	s, substr string,
-) bool {
+func contains(s, substr string) bool {
 	return bytes.Contains([]byte(s), []byte(substr))
 }
