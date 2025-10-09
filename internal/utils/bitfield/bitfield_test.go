@@ -73,10 +73,10 @@ func TestFromBytesAndToBytesIndependence(t *testing.T) {
 		t.Fatalf("FromBytes must copy input")
 	}
 
-	out := bf.ToBytes()
+	out := bf.Bytes()
 	out[1] = 0xAA
 	if bf[1] != 0x00 {
-		t.Fatalf("ToBytes must return a copy, not alias")
+		t.Fatalf("Bytes must return a copy, not alias")
 	}
 }
 
@@ -100,12 +100,12 @@ func TestCountAndEquals(t *testing.T) {
 		t.Fatalf("Count() = %d; want %d", got, 4)
 	}
 
-	same := FromBytes(bf.ToBytes())
+	same := FromBytes(bf.Bytes())
 	if !bf.Equals(same) {
 		t.Fatalf("Equals should report identical contents")
 	}
 
-	diff := FromBytes(bf.ToBytes())
+	diff := FromBytes(bf.Bytes())
 	diff.Set(9)
 	if bf.Equals(diff) {
 		t.Fatalf("Equals should detect difference")
