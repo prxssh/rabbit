@@ -1,3 +1,14 @@
-build/bin
-node_modules
-frontend/dist
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+build/
+data/
+
+cmd/rabbit/build/
+cmd/rabbit/frontend/
+
+node_modules/
+frontend/dist/
+frontend/node_modules/
