@@ -4,8 +4,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/prxssh/rabbit/pkg/config"
-	"github.com/prxssh/rabbit/pkg/utils/bitfield"
+	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/utils/bitfield"
 )
 
 // selectSequentialPiecesToDownload implements StrategySequential.

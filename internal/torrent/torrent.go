@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prxssh/rabbit/pkg/config"
-	"github.com/prxssh/rabbit/pkg/peer"
-	"github.com/prxssh/rabbit/pkg/piece"
-	"github.com/prxssh/rabbit/pkg/tracker"
+	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/peer"
+	"github.com/prxssh/rabbit/internal/piece"
+	"github.com/prxssh/rabbit/internal/tracker"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sync/errgroup"
 )

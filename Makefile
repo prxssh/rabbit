@@ -1,4 +1,3 @@
-SRC_DIR := cmd/rabbit
 BINARY := rabbit
 BUILD_DIR := build
 
