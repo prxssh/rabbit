@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/prxssh/rabbit/pkg/config"
-	"github.com/prxssh/rabbit/pkg/piece"
-	"github.com/prxssh/rabbit/pkg/utils/bitfield"
+	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/piece"
+	"github.com/prxssh/rabbit/internal/utils/bitfield"
 	"golang.org/x/sync/errgroup"
 )
 

@@ -76,8 +76,11 @@ type AnnounceResponse struct {
 type Event uint32
 
 const (
+	// EventNone is used for regular periodic announces.
+	EventNone Event = iota
+
 	// EventStarted signals the first announce after starting download.
-	EventStarted Event = iota
+	EventStarted
 
 	// EventStopped signals graceful shutdown (last chance to update stats).
 	EventStopped

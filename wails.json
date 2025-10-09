@@ -6,9 +6,10 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "wailsjsdir": "./frontend/src/lib/wailsjs",
   "author": {
     "name": "prxssh",
-    "email": "prxssh@pm.me"
+    "email": "hello@prxssh.com"
   },
   "info": {
       "icon": "frontend/src/assets/images/rabbit-icon.png"

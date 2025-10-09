@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prxssh/rabbit/pkg/bencode"
+	"github.com/prxssh/rabbit/internal/bencode"
 )
 
 func mkPieces(n int) []byte {

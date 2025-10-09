@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/prxssh/rabbit/pkg/config"
-	"github.com/prxssh/rabbit/pkg/torrent"
-	"github.com/prxssh/rabbit/pkg/utils/logging"
+	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/torrent"
+	"github.com/prxssh/rabbit/internal/utils/logging"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"

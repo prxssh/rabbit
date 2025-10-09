@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/prxssh/rabbit/pkg/config"
+	"github.com/prxssh/rabbit/internal/config"
 )
 
 const (

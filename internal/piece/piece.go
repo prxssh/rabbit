@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/prxssh/rabbit/pkg/config"
+	"github.com/prxssh/rabbit/internal/config"
 )
 
 // PieceCount returns how many pieces are needed to cover totalSize bytes, given

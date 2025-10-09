@@ -1,6 +1,7 @@
 package cast
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -11,7 +12,7 @@ func ToString(v any) (string, error) {
 	case []byte:
 		return string(t), nil
 	default:
-		return "", fmt.Errorf("not a string")
+		return "", errors.New("not a string")
 	}
 }
 
@@ -22,7 +23,7 @@ func ToBytes(v any) ([]byte, error) {
 	case string:
 		return []byte(t), nil
 	default:
-		return nil, fmt.Errorf("not a byte string")
+		return nil, errors.New("not a byte string")
 	}
 }
 
@@ -47,14 +48,14 @@ func ToInt(v any) (int64, error) {
 	case uint64:
 		return int64(t), nil
 	default:
-		return 0, fmt.Errorf("not an int")
+		return 0, errors.New("not an int")
 	}
 }
 
 func ToStringSlice(v any) ([]string, error) {
 	list, ok := v.([]any)
 	if !ok {
-		return nil, fmt.Errorf("not a list")
+		return nil, errors.New("not a list")
 	}
 
 	out := make([]string, 0, len(list))
@@ -73,7 +74,7 @@ func ToStringSlice(v any) ([]string, error) {
 func ToTieredStrings(v any) ([][]string, error) {
 	tiers, ok := v.([]any)
 	if !ok {
-		return nil, fmt.Errorf("not list")
+		return nil, errors.New("not list")
 	}
 
 	out := make([][]string, 0, len(tiers))

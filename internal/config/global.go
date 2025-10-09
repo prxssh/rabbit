@@ -5,8 +5,8 @@ import "sync/atomic"
 var cfg atomic.Value
 
 func Init() {
-	dcfg := defaultConfig()
-	c := dcfg
+	def := defaultConfig()
+	c := def
 	cfg.Store(&c)
 }
 
