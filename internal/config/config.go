@@ -2,7 +2,8 @@ package config
 
 import (
 	"context"
-	"log/slog"
+	"crypto/rand"
+	"crypto/sha1"
 	"net"
 	"os"
 	"path/filepath"
@@ -43,9 +44,8 @@ type Config struct {
 	// continue downloading to their original location.
 	DefaultDownloadDir string
 
-	// ClientIDPrefix customizes the peer ID prefix (e.g., "-EC0001-").
-	// Must be exactly 8 bytes. Empty uses default.
-	ClientIDPrefix string
+	// ClientID is the unique identifier for our client.
+	ClientID [sha1.Size]byte
 
 	// ========== Networking ==========
 
@@ -154,14 +154,14 @@ type Config struct {
 	// peer to maintain the connection.
 	PeerHeartbeatInterval time.Duration
 
-	// KeepAliveInterval is how often to check peer connection health and
-	// close idle connections.
+	// PeerInactivityDuration is the minimum interval after which a peer connection
+	// is considered inactive.
+	PeerInactivityDuration time.Duration
+
+	// KeepAliveInterval is the interval to send keep-alive messages to the peer.
 	KeepAliveInterval time.Duration
 
 	// ========== Miscellaneous ==========
-
-	// LogLevel is slog LogLevel
-	LogLevel slog.Level
 
 	// MetricsEnabled toggled Prom/OTel metrics endpoint.
 	MetricsEnabled bool
@@ -184,13 +184,18 @@ type Config struct {
 }
 
 // DefaultConfig returns sensible defaults for most use cases.
-func defaultConfig() Config {
+func defaultConfig() (Config, error) {
 	downloadDir := getDefaultDownloadDir()
 	hasIPV6 := hasIPV6()
 
+	clientID, err := generateClientID()
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		DefaultDownloadDir:         downloadDir,
-		ClientIDPrefix:             "-RBT001-",
+		ClientID:                   clientID,
 		ReadTimeout:                30 * time.Second,
 		WriteTimeout:               30 * time.Second,
 		DialTimeout:                7 * time.Second,
@@ -217,14 +222,13 @@ func defaultConfig() Config {
 		OptimisticUnchokeInterval:  30 * time.Second,
 		PeerHeartbeatInterval:      60 * time.Second,
 		KeepAliveInterval:          90 * time.Second,
-		LogLevel:                   slog.LevelDebug,
 		MetricsEnabled:             false,
 		MetricsBindAddr:            ":9090",
 		EnableIPv6:                 hasIPV6,
 		EnableDHT:                  false,
 		EnablePEX:                  false,
 		HasIPV6:                    hasIPV6,
-	}
+	}, nil
 }
 
 func hasIPV6() bool {
@@ -272,4 +276,17 @@ func getDefaultDownloadDir() string {
 	default: // linux, bsd, etc.
 		return filepath.Join(home, ".local", "share", "rabbit", "downloads")
 	}
+}
+
+func generateClientID() ([sha1.Size]byte, error) {
+	var peerID [sha1.Size]byte
+
+	prefix := []byte("-RBBT-")
+	copy(peerID[:], prefix)
+
+	if _, err := rand.Read(peerID[len(prefix):]); err != nil {
+		return [sha1.Size]byte{}, err
+	}
+
+	return peerID, nil
 }

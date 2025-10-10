@@ -13,156 +13,111 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prxssh/rabbit/internal/config"
+	"golang.org/x/sync/errgroup"
 )
 
-// AnnounceParams contains all information needed for a tracker announce.
+const (
+	maxBackoffShift        = 5
+	maxConsecutiveFailures = 5
+)
+
 type AnnounceParams struct {
-	// InfoHash uniquely identifies the torrent (SHA-1 of info dict).
-	InfoHash [sha1.Size]byte
-
-	// PeerID uniquely identifies this client instance.
-	PeerID [sha1.Size]byte
-
-	// Uploaded counts total bytes uploaded to peers (cumulative).
-	Uploaded uint64
-
-	// Downloaded counts total bytes downloaded from peers (cumulative).
+	InfoHash   [sha1.Size]byte
+	PeerID     [sha1.Size]byte
+	Uploaded   uint64
 	Downloaded uint64
-
-	// Left indicates remaining bytes to download (0 when complete).
-	Left uint64
-
-	// Event signals lifecycle transitions (started, stopped, completed).
-	Event Event
-
-	// Key is an optional randomized value for NAT traversal.
-	Key uint32
-
-	// TrackerID is an opaque token from previous response (HTTP trackers).
-	TrackerID string
-
-	// IP allows manual IP override (usually auto-detected by tracker).
-	IP string
-
-	// numWant requests a specific peer count. 0 uses tracker default.
-	NumWant uint32
-
-	// port is the TCP port this client listens on for incoming connections.
-	Port uint16
+	Left       uint64
+	Event      Event
+	Key        uint32
+	TrackerID  string
+	IP         string
+	NumWant    uint32
+	Port       uint16
 }
 
-// AnnounceResponse contains peer list and swarm statistics from tracker.
 type AnnounceResponse struct {
-	// TrackerID is an opaque token to include in next announce (HTTP only).
-	TrackerID string
-
-	// Interval specifies when to send next regular announce.
-	Interval time.Duration
-
-	// MinInterval is the minimum allowed time between announces.
+	TrackerID   string
+	Interval    time.Duration
 	MinInterval time.Duration
-
-	// Leechers counts incomplete downloaders in the swarm.
-	Leechers int64
-
-	// Seeders counts complete uploaders in the swarm.
-	Seeders int64
-
-	// Peers contains connectable peer addresses (IPv4 and/or IPv6).
-	Peers []netip.AddrPort
+	Leechers    int64
+	Seeders     int64
+	Peers       []netip.AddrPort
 }
 
-// Event represents lifecycle states communicated to tracker.
 type Event uint32
 
 const (
-	// EventNone is used for regular periodic announces.
 	EventNone Event = iota
-
-	// EventStarted signals the first announce after starting download.
 	EventStarted
-
-	// EventStopped signals graceful shutdown (last chance to update stats).
 	EventStopped
-
-	// EventCompleted signals download completion (transition to seeding).
 	EventCompleted
 )
 
 func (e Event) String() string {
 	switch e {
-	case EventStopped:
-		return "stopped"
+	case EventNone:
+		return "none"
+	case EventStarted:
+		return "started"
 	case EventCompleted:
 		return "completed"
 	default:
-		return "started"
+		return "stopped"
 	}
 }
 
-// TrackerProtocol abstracts HTTP, UDP, and potential future protocols.
 type TrackerProtocol interface {
-	// Announce performs a single announce request with timeout and returns
-	// peer list or error.
 	Announce(ctx context.Context, params *AnnounceParams) (*AnnounceResponse, error)
 }
 
-// Stats provides runtime metrics about tracker operation.
 type Stats struct {
-	// TotalAnnounces counts all announce attempts (success + failure).
-	TotalAnnounces atomic.Uint64
-
-	// SuccessfulAnnounces counts successful responses.
+	TotalAnnounces      atomic.Uint64
 	SuccessfulAnnounces atomic.Uint64
-
-	// FailedAnnounces counts all failures across all tiers.
-	FailedAnnounces atomic.Uint64
-
-	// LastAnnounce records the timestamp of the most recent attempt.
-	LastAnnounce atomic.Int64
-
-	// LastSuccess records the timestamp of the most recent success.
-	LastSuccess atomic.Int64
-
-	// TotalPeersReceived accumulates peer count across all responses.
-	TotalPeersReceived atomic.Uint64
-
-	// CurrentSeeders holds the last reported seeder count.
-	CurrentSeeders atomic.Int64
-
-	// CurrentLeechers holds the last reported leecher count.
-	CurrentLeechers atomic.Int64
+	FailedAnnounces     atomic.Uint64
+	LastAnnounce        atomic.Int64
+	LastSuccess         atomic.Int64
+	TotalPeersReceived  atomic.Uint64
+	CurrentSeeders      atomic.Int64
+	CurrentLeechers     atomic.Int64
 }
 
-// Tracker manages multi-tier tracker communication with failover, retries, and
-// promotion strategies.
-//
-// Thread-safety: All methods are safe for concurrent use.
+type TrackerMetrics struct {
+	TotalAnnounces      uint64
+	SuccessfulAnnounces uint64
+	FailedAnnounces     uint64
+	TotalPeersReceived  uint64
+	CurrentSeeders      int64
+	CurrentLeechers     int64
+	LastAnnounce        time.Time
+	LastSuccess         time.Time
+}
+
 type Tracker struct {
-	// tiers organizes announce URLs in preference order. Inner arrays are
-	// tried in parallel (conceptually), outer arrays are fallback levels.
-	tiers [][]*url.URL
-
-	// mu protects tiers and trackers maps during promotion and lazy init.
-	mu sync.Mutex
-
-	// trackers caches protocol-specific clients keyed by URL string.
-	trackers map[string]TrackerProtocol
-
-	// log provides structured logging with component context.
-	log *slog.Logger
-
-	// stats exposes runtime metrics.
-	stats Stats
+	tiers             [][]*url.URL
+	mu                sync.Mutex
+	trackers          map[string]TrackerProtocol
+	log               *slog.Logger
+	stats             *Stats
+	onAnnounceStart   func() *AnnounceParams
+	onAnnounceSuccess func(addrs []netip.AddrPort)
 }
 
-// NewTracker constructs a tracker client from announce URL(s) and config.
-//
-// The announce parameter is the primary URL (from .torrent file).
-// The announceList is an optional tier list (from announce-list extension).
-//
-// Returns error if no valid URLs can be parsed.
-func NewTracker(announce string, announceList [][]string, log *slog.Logger) (*Tracker, error) {
+type TrackerOpts struct {
+	OnAnnounceStart   func() *AnnounceParams
+	OnAnnounceSuccess func(addrs []netip.AddrPort)
+	Log               *slog.Logger
+}
+
+func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*Tracker, error) {
+	if opts.OnAnnounceStart == nil {
+		return nil, errors.New("OnAnnounceStart hook missing")
+	}
+	if opts.OnAnnounceSuccess == nil {
+		return nil, errors.New("OnAnnounceSuccess hook missing")
+	}
+
 	tiers, err := buildAnnounceURLs(announce, announceList)
 	if err != nil {
 		return nil, err
@@ -180,33 +135,51 @@ func NewTracker(announce string, announceList [][]string, log *slog.Logger) (*Tr
 		})
 	}
 
-	log = log.With("component", "tracker", "tiers", len(tiers))
+	log := opts.Log.With("component", "tracker", "tiers", len(tiers))
 
 	return &Tracker{
-		log:      log,
-		tiers:    tiers,
-		trackers: make(map[string]TrackerProtocol),
+		log:               log,
+		tiers:             tiers,
+		stats:             &Stats{},
+		onAnnounceStart:   opts.OnAnnounceStart,
+		onAnnounceSuccess: opts.OnAnnounceSuccess,
+		trackers:          make(map[string]TrackerProtocol),
 	}, nil
 }
 
 func (t *Tracker) Run(ctx context.Context) error {
-	var err error
+	g, gctx := errgroup.WithContext(ctx)
 
-	go func() {
-		t.stats.TotalAnnounces.Add(1)
-		t.stats.LastAnnounce.Store(time.Now().Unix())
-	}()
-
-	return err
+	g.Go(func() error { return t.announceLoop(gctx) })
+	return g.Wait()
 }
 
-// Announce performs a single synchronous announce across all tiers with
-// failover. It tries each tier in order until success or all tiers exhausted.
-//
-// Within a tier, trackers are tried sequentially (not truly parallel to avoid
-// hammering multiple endpoints simultaneously).
-//
-// Returns the first successful response or the last error encountered.
+func (t *Tracker) Stats() TrackerMetrics {
+	s := t.stats
+
+	lastAnn := s.LastAnnounce.Load()
+	lastSuc := s.LastSuccess.Load()
+
+	var lastAnnT, lastSucT time.Time
+	if lastAnn > 0 {
+		lastAnnT = time.Unix(lastAnn, 0)
+	}
+	if lastSuc > 0 {
+		lastSucT = time.Unix(lastSuc, 0)
+	}
+
+	return TrackerMetrics{
+		TotalAnnounces:      s.TotalAnnounces.Load(),
+		SuccessfulAnnounces: s.SuccessfulAnnounces.Load(),
+		FailedAnnounces:     s.FailedAnnounces.Load(),
+		TotalPeersReceived:  s.TotalPeersReceived.Load(),
+		CurrentSeeders:      s.CurrentSeeders.Load(),
+		CurrentLeechers:     s.CurrentLeechers.Load(),
+		LastAnnounce:        lastAnnT,
+		LastSuccess:         lastSucT,
+	}
+}
+
 func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*AnnounceResponse, error) {
 	t.stats.TotalAnnounces.Add(1)
 	t.stats.LastAnnounce.Store(time.Now().Unix())
@@ -259,9 +232,46 @@ func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*Announ
 	return nil, lastErr
 }
 
-// Stats returns a snapshot of current tracker statistics.
-func (t *Tracker) Stats() *Stats {
-	return &t.stats
+func (t *Tracker) announceLoop(ctx context.Context) error {
+	l := t.log.With("component", "announce loop")
+	l.Debug("started")
+
+	consecutiveFailures := 0
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.Warn("context done; exiting!", "error", ctx.Err())
+			sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer scancel()
+
+			params := t.onAnnounceStart()
+			params.Event = EventStopped
+			_, _ = t.Announce(sctx, params)
+
+			return nil
+
+		case <-ticker.C:
+			if consecutiveFailures >= maxConsecutiveFailures {
+				return errors.New("failed announce; exhausted all attempts")
+			}
+
+			resp, err := t.Announce(ctx, t.onAnnounceStart())
+			if err != nil {
+				consecutiveFailures++
+				backoff := calculateBackoff(consecutiveFailures, maxBackoffShift)
+				ticker.Reset(backoff)
+				continue
+			}
+
+			t.onAnnounceSuccess(resp.Peers)
+
+			consecutiveFailures = 0
+			ticker.Reset(getNextAnnounceInterval(resp))
+		}
+	}
 }
 
 func (t *Tracker) snapshotTier(at int) []*url.URL {
@@ -371,4 +381,43 @@ func parseTrackerURL(raw string) (*url.URL, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func calculateBackoff(failures int, maxShift int) time.Duration {
+	const baseDelay = 15 * time.Second
+
+	shift := failures - 1
+	if shift > maxShift {
+		shift = maxShift
+	}
+
+	delay := baseDelay * (1 << uint(shift))
+
+	if delay > config.Load().MaxAnnounceBackoff {
+		delay = config.Load().MaxAnnounceBackoff
+	}
+
+	jitter := time.Duration(rand.Int63n(int64(delay) / 2))
+	return delay - (delay / 4) + jitter
+}
+
+func getNextAnnounceInterval(resp *AnnounceResponse) time.Duration {
+	interval := config.Load().AnnounceInterval
+	if interval == 0 {
+		interval = 2 * time.Minute
+	}
+
+	if resp.Interval > 0 {
+		interval = resp.Interval
+	}
+	if resp.MinInterval > 0 && resp.MinInterval > interval {
+		interval = resp.MinInterval
+	}
+
+	if config.Load().MinAnnounceInterval > 0 &&
+		interval < config.Load().MinAnnounceInterval {
+		interval = config.Load().MinAnnounceInterval
+	}
+
+	return interval
 }
