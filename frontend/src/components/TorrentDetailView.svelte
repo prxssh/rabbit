@@ -4,7 +4,7 @@
   import { formatBytes, formatHash } from '../lib/utils'
 
   export let torrentData: torrent.Torrent | undefined
-  export let peers: peer.PeerStats[]
+  export let peers: peer.PeerMetrics[]
   export let activeTab: 'info' | 'peers' = 'info'
 
   $: meta = torrentData?.metainfo

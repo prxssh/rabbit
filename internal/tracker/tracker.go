@@ -84,14 +84,14 @@ type Stats struct {
 }
 
 type TrackerMetrics struct {
-	TotalAnnounces      uint64
-	SuccessfulAnnounces uint64
-	FailedAnnounces     uint64
-	TotalPeersReceived  uint64
-	CurrentSeeders      int64
-	CurrentLeechers     int64
-	LastAnnounce        time.Time
-	LastSuccess         time.Time
+	TotalAnnounces      uint64    `json:"totalAnnounces"`
+	SuccessfulAnnounces uint64    `json:"successfulAnnounces"`
+	FailedAnnounces     uint64    `json:"failedAnnounces"`
+	TotalPeersReceived  uint64    `json:"totalPeersReceived"`
+	CurrentSeeders      int64     `json:"currentSeeders"`
+	CurrentLeechers     int64     `json:"currentLeechers"`
+	LastAnnounce        time.Time `json:"lastAnnounce"`
+	LastSuccess         time.Time `json:"lastSuccess"`
 }
 
 type Tracker struct {

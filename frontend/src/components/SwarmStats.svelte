@@ -1,28 +1,27 @@
 <script lang="ts">
-  import type {torrent} from '../../wailsjs/go/models'
   import { formatBytes, formatBytesPerSec } from '../lib/utils'
 
-  export let swarm: torrent.SwarmMetrics | undefined
+  export let stats: any | undefined
 
-  $: stats = swarm ? [
-    { label: 'Total Peers', value: swarm.totalPeers.toString() },
-    { label: 'Connecting', value: swarm.connectingPeers.toString() },
-    { label: 'Failed Connections', value: swarm.failedConnection.toString() },
-    { label: 'Unchoked Peers', value: swarm.unchokedPeers.toString() },
-    { label: 'Interested Peers', value: swarm.interestedPeers.toString() },
-    { label: 'Uploading To', value: swarm.uploadingTo.toString() },
-    { label: 'Downloading From', value: swarm.downloadingFrom.toString() },
-    { label: 'Total Downloaded', value: formatBytes(swarm.totalDownloaded) },
-    { label: 'Total Uploaded', value: formatBytes(swarm.totalUploaded) },
-    { label: 'Download Rate', value: formatBytesPerSec(swarm.downloadRate) },
-    { label: 'Upload Rate', value: formatBytesPerSec(swarm.uploadRate) }
+  $: items = stats ? [
+    { label: 'Total Peers', value: String(stats.totalPeers ?? 0) },
+    { label: 'Connecting', value: String(stats.connectingPeers ?? 0) },
+    { label: 'Failed Connections', value: String(stats.failedConnection ?? 0) },
+    { label: 'Unchoked Peers', value: String(stats.unchokedPeers ?? 0) },
+    { label: 'Interested Peers', value: String(stats.interestedPeers ?? 0) },
+    { label: 'Uploading To', value: String(stats.uploadingTo ?? 0) },
+    { label: 'Downloading From', value: String(stats.downloadingFrom ?? 0) },
+    { label: 'Total Downloaded', value: formatBytes(stats.totalDownloaded ?? 0) },
+    { label: 'Total Uploaded', value: formatBytes(stats.totalUploaded ?? 0) },
+    { label: 'Download Rate', value: formatBytesPerSec(stats.downloadRate ?? 0) },
+    { label: 'Upload Rate', value: formatBytesPerSec(stats.uploadRate ?? 0) }
   ] : []
 </script>
 
 <div class="swarm-stats">
-  {#if swarm}
+  {#if stats}
     <div class="stats-grid">
-      {#each stats as stat}
+      {#each items as stat}
         <div class="stat-card">
           <div class="stat-label">{stat.label}</div>
           <div class="stat-value">{stat.value}</div>

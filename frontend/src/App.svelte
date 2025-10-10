@@ -16,10 +16,9 @@
   let uploadStatus = ''
   let torrents: any[] = []
   let selectedTorrentId: number | null = null
-  let peers: peer.PeerStats[] = []
+  let peers: peer.PeerMetrics[] = []
   let pieceStates: number[] = []
-  let swarmStats: torrent.SwarmMetrics | undefined = undefined
-  let trackerStats: torrent.TrackerMetrics | undefined = undefined
+  let selectedStats: any = null
   let statsUpdateInterval: number | null = null
   let showAddDialog = false
   let showSettingsDialog = false
@@ -123,8 +122,7 @@
                 peers = stats.peers || []
                 // Force a new array reference to trigger Svelte reactivity
                 pieceStates = (stats.pieceStates || []).slice()
-                swarmStats = stats.swarm
-                trackerStats = stats.tracker
+                selectedStats = stats
               }
 
               // Track aggregate rates
@@ -270,8 +268,7 @@
   $: if (!selectedTorrent) {
     peers = []
     pieceStates = []
-    swarmStats = undefined
-    trackerStats = undefined
+    selectedStats = null
   }
 
   // Start stats update interval when we have torrents
@@ -334,8 +331,7 @@
           torrentData={selectedTorrent.torrentData}
           {peers}
           {pieceStates}
-          {swarmStats}
-          {trackerStats}
+          stats={selectedStats}
         />
       </div>
     {/if}

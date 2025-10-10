@@ -48,20 +48,22 @@ type SwarmOpts struct {
 }
 
 type SwarmMetrics struct {
-	TotalPeers       uint32
-	ConnectingPeers  uint32
-	FailedConnection uint32
-	UnchokedPeers    uint32
-	InterestedPeers  uint32
-	UploadingTo      uint32
-	DownloadingFrom  uint32
+	TotalPeers       uint32 `json:"totalPeers"`
+	ConnectingPeers  uint32 `json:"connectingPeers"`
+	FailedConnection uint32 `json:"failedConnection"`
+	UnchokedPeers    uint32 `json:"unchokedPeers"`
+	InterestedPeers  uint32 `json:"interestedPeers"`
+	UploadingTo      uint32 `json:"uploadingTo"`
+	DownloadingFrom  uint32 `json:"downloadingFrom"`
 
-	TotalDownloaded uint64
-	TotalUploaded   uint64
-	DownloadRate    uint64
-	UploadRate      uint64
+	TotalDownloaded uint64 `json:"totalDownloaded"`
+	TotalUploaded   uint64 `json:"totalUploaded"`
+	DownloadRate    uint64 `json:"downloadRate"`
+	UploadRate      uint64 `json:"uploadRate"`
 }
 
+// PeerMetrics is a snapshot of a single peer's connection + transfer stats.
+// Exported for binding to the frontend via Wails.
 func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	cfg := config.Load()
 
@@ -109,6 +111,19 @@ func (s *Swarm) Stats() SwarmMetrics {
 		DownloadRate:     ps.DownloadRate.Load(),
 		UploadRate:       ps.UploadRate.Load(),
 	}
+}
+
+// PeerMetrics returns a snapshot of all known peers' metrics.
+func (s *Swarm) PeerMetrics() []PeerMetrics {
+	s.peerMu.RLock()
+	defer s.peerMu.RUnlock()
+
+	out := make([]PeerMetrics, 0, len(s.peers))
+	for _, p := range s.peers {
+		out = append(out, p.Stats())
+	}
+
+	return out
 }
 
 func (s *Swarm) Stop() {
@@ -258,7 +273,7 @@ func (s *Swarm) admitPeersLoop(ctx context.Context) error {
 			}
 
 			go func(addr netip.AddrPort) {
-				peer, err := s.AddPeer(ctx, addr)
+				p, err := s.AddPeer(ctx, addr)
 				if err != nil {
 					l.Debug(
 						"peer connection failed",
@@ -268,12 +283,16 @@ func (s *Swarm) admitPeersLoop(ctx context.Context) error {
 					return
 				}
 
-				defer s.RemovePeer(addr)
+				if p == nil {
+					return
+				}
 
-				if err := peer.Run(ctx); err != nil {
+				defer s.RemovePeer(p.addr)
+
+				if err := p.Run(ctx); err != nil {
 					l.Debug(
 						"peer failed to run",
-						"addr", addr,
+						"addr", p.addr,
 						"error", err.Error(),
 					)
 					return
