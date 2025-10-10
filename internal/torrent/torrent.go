@@ -6,14 +6,15 @@ import (
 	"sync"
 
 	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/meta"
 	"github.com/prxssh/rabbit/internal/peer"
 	"github.com/prxssh/rabbit/internal/tracker"
 	"golang.org/x/sync/errgroup"
 )
 
 type Torrent struct {
-	Size        uint64    `json:"size"`
-	Metainfo    *Metainfo `json:"metainfo"`
+	Size        uint64         `json:"size"`
+	Metainfo    *meta.Metainfo `json:"metainfo"`
 	tracker     *tracker.Tracker
 	peerManager *peer.Swarm
 	cancel      context.CancelFunc
@@ -23,7 +24,7 @@ type Torrent struct {
 }
 
 func NewTorrent(data []byte) (*Torrent, error) {
-	metainfo, err := ParseMetainfo(data)
+	metainfo, err := meta.ParseMetainfo(data)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +37,7 @@ func NewTorrent(data []byte) (*Torrent, error) {
 
 	peerManager, err := peer.NewSwarm(&peer.SwarmOpts{
 		Log:        torrent.log,
-		InfoHash:   metainfo.Info.Hash,
+		InfoHash:   metainfo.InfoHash,
 		PieceCount: len(metainfo.Info.Pieces),
 	})
 	if err != nil {
@@ -80,7 +81,7 @@ func (t *Torrent) Stop() {
 			t.cancel()
 		}
 
-		t.log.Info("stopped")
+		t.log.Debug("stopped")
 	})
 }
 
@@ -122,7 +123,7 @@ func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
 		NumWant:    50,
 		Event:      event,
 		Port:       config.Load().Port,
-		InfoHash:   t.Metainfo.Info.Hash,
+		InfoHash:   t.Metainfo.InfoHash,
 		PeerID:     config.Load().ClientID,
 		Uploaded:   stats.TotalUploaded,
 		Downloaded: stats.TotalDownloaded,

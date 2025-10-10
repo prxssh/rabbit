@@ -1,4 +1,4 @@
-package torrent
+package meta
 
 import (
 	"crypto/sha1"
@@ -10,20 +10,20 @@ import (
 )
 
 type Metainfo struct {
-	Info         *Info      `json:"info"`
-	Announce     string     `json:"announce"`
-	AnnounceList [][]string `json:"announceList"`
-	CreationDate time.Time  `json:"creationDate"`
-	CreatedBy    string     `json:"createdBy"`
-	Comment      string     `json:"comment"`
-	Encoding     string     `json:"encoding"`
-	URLs         []string   `json:"urls"`
+	Info         *Info           `json:"info"`
+	Announce     string          `json:"announce"`
+	AnnounceList [][]string      `json:"announceList"`
+	CreationDate time.Time       `json:"creationDate"`
+	CreatedBy    string          `json:"createdBy"`
+	Comment      string          `json:"comment"`
+	Encoding     string          `json:"encoding"`
+	URLs         []string        `json:"urls"`
+	InfoHash     [sha1.Size]byte `json:"hash"`
 }
 
 type Info struct {
-	Hash        [sha1.Size]byte   `json:"hash"`
 	Name        string            `json:"name"`
-	PieceLength int64             `json:"pieceLength"`
+	PieceLength int32             `json:"pieceLength"`
 	Pieces      [][sha1.Size]byte `json:"pieces"`
 	Private     bool              `json:"private"`
 	Length      uint64            `json:"length"`
@@ -111,8 +111,14 @@ func ParseMetainfo(data []byte) (*Metainfo, error) {
 		return nil, err
 	}
 
+	infoHash, err := infoHash(root["info"].(map[string]any))
+	if err != nil {
+		return nil, fmt.Errorf("metainfo: info hash: %w", err)
+	}
+
 	return &Metainfo{
 		Info:         info,
+		InfoHash:     infoHash,
 		Announce:     announce,
 		AnnounceList: announceList,
 		CreationDate: creationDate,
@@ -131,13 +137,10 @@ func parseInfo(anyInfo any) (*Info, error) {
 		return nil, ErrInfoNotDict
 	}
 
-	var out Info
-
-	h, err := infoHash(dict)
-	if err != nil {
-		return nil, fmt.Errorf("metainfo: info hash: %w", err)
-	}
-	out.Hash = h
+	var (
+		out Info
+		err error
+	)
 
 	nameVal, ok := dict["name"]
 	if !ok {
@@ -152,10 +155,11 @@ func parseInfo(anyInfo any) (*Info, error) {
 	if !ok {
 		return nil, ErrPieceLenMissing
 	}
-	out.PieceLength, err = cast.ToInt(plVal)
-	if err != nil || out.PieceLength <= 0 {
+	plen, err := cast.ToInt(plVal)
+	if err != nil || plen <= 0 {
 		return nil, ErrPieceLenNonPositive
 	}
+	out.PieceLength = int32(plen)
 
 	out.Pieces, err = parsePieces(dict["pieces"])
 	if err != nil {
@@ -179,7 +183,7 @@ func parseInfo(anyInfo any) (*Info, error) {
 	switch {
 	case hasLength && !hasFiles:
 		length, err := cast.ToInt(lengthVal)
-		if err != nil || out.Length < 0 {
+		if err != nil || length < 0 {
 			return nil, fmt.Errorf("metainfo: invalid 'length'")
 		}
 		out.Length = uint64(length)

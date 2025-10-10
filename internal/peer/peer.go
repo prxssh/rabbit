@@ -36,6 +36,7 @@ type Peer struct {
 	lastAcitivyAt atomic.Int64
 	outbox        chan *protocol.Message
 	closeOnce     sync.Once
+	startOnce     sync.Once
 	stopped       atomic.Bool
 	cancel        context.CancelFunc
 }
@@ -155,7 +156,7 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, e
 }
 
 func (p *Peer) Run(ctx context.Context) error {
-	defer p.Stop()
+	defer p.Close()
 
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
@@ -169,7 +170,7 @@ func (p *Peer) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
-func (p *Peer) Stop() {
+func (p *Peer) Close() {
 	p.closeOnce.Do(func() {
 		p.stopped.Store(true)
 
@@ -284,7 +285,7 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 			}
 
 			if err := p.writeMessage(message); err != nil {
-				l.Warn("failed to write message, exiting loop", err.Error())
+				l.Warn("failed to write message, exiting loop", "error", err.Error())
 				return err
 			}
 
@@ -398,10 +399,10 @@ func (p *Peer) writeMessage(message *protocol.Message) error {
 	return nil
 }
 
-func (p *Peer) AmChoking() bool     { return p.getState(maskAmChoking) }
-func (p *Peer) AmInterested() bool  { return p.getState(maskAmInterested) }
-func (p *Peer) PeerChoking() bool   { return p.getState(maskPeerChoking) }
-func (p *Peer) PeerIntersted() bool { return p.getState(maskPeerInterested) }
+func (p *Peer) AmChoking() bool      { return p.getState(maskAmChoking) }
+func (p *Peer) AmInterested() bool   { return p.getState(maskAmInterested) }
+func (p *Peer) PeerChoking() bool    { return p.getState(maskPeerChoking) }
+func (p *Peer) PeerInterested() bool { return p.getState(maskPeerInterested) }
 
 func (p *Peer) getState(mask uint32) bool { return atomic.LoadUint32(&p.state)&mask != 0 }
 

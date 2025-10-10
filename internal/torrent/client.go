@@ -36,7 +36,7 @@ func (c *Client) AddTorrent(data []byte) (*Torrent, error) {
 		return nil, err
 	}
 
-	infoHashHex := hex.EncodeToString(torrent.Metainfo.Info.Hash[:])
+    infoHashHex := hex.EncodeToString(torrent.Metainfo.InfoHash[:])
 
 	c.log.Debug("adding torrent",
 		"name", torrent.Metainfo.Info.Name,
@@ -45,8 +45,8 @@ func (c *Client) AddTorrent(data []byte) (*Torrent, error) {
 		"pieces", len(torrent.Metainfo.Info.Pieces),
 	)
 
-	c.mu.Lock()
-	c.torrents[torrent.Metainfo.Info.Hash] = torrent
+    c.mu.Lock()
+    c.torrents[torrent.Metainfo.InfoHash] = torrent
 	c.mu.Unlock()
 
 	go func() { torrent.Run(c.ctx) }()
