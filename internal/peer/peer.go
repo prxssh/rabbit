@@ -33,7 +33,7 @@ type Peer struct {
 	stats         *PeerStats
 	bitfieldMu    sync.RWMutex
 	bitfield      bitfield.Bitfield
-	lastKeepAlive time.Time
+	lastKeepAlive atomic.Int64
 	outbox        chan *protocol.Message
 	closeOnce     sync.Once
 	stopped       atomic.Bool
@@ -105,34 +105,31 @@ type PeerOpts struct {
 	Log        *slog.Logger
 	PieceCount int
 	InfoHash   [sha1.Size]byte
-	ClientID   [sha1.Size]byte
 }
 
-func NewPeer(ctx context.Context, addr string, opts *PeerOpts) (*Peer, error) {
+func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, error) {
 	log := opts.Log.With("src", "peer", "addr", addr)
 
-	conn, err := net.DialTimeout("tcp", addr, config.Load().DialTimeout)
+	conn, err := net.DialTimeout("tcp", addr.String(), config.Load().DialTimeout)
 	if err != nil {
-		log.Debug("peer connection failed", "error", err)
 		return nil, err
 	}
 
-	handshake := protocol.NewHandshake(opts.InfoHash, opts.ClientID)
+	handshake := protocol.NewHandshake(opts.InfoHash, config.Load().ClientID)
 	if _, err := handshake.Exchange(conn, true); err != nil {
-		log.Debug("peer handshake failed", "error", err)
 		_ = conn.Close()
 		return nil, err
 	}
 
 	p := &Peer{
-		log:           log,
-		conn:          conn,
-		lastKeepAlive: time.Now(),
-		stats:         &PeerStats{},
-		bitfield:      bitfield.New(opts.PieceCount),
-		outbox:        make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
+		log:      log,
+		conn:     conn,
+		stats:    &PeerStats{},
+		bitfield: bitfield.New(opts.PieceCount),
+		outbox:   make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
 	}
 	p.setState(maskAmChoking|maskPeerChoking, true)
+	p.lastKeepAlive.Store(time.Now().UnixNano())
 	p.stats.ConnectedAt = time.Now()
 
 	return p, nil
@@ -162,7 +159,14 @@ func (p *Peer) Stop() {
 		_ = p.conn.Close()
 		close(p.outbox)
 		p.stats.DisconnectedAt = time.Now()
+
+		p.log.Debug("stopped peer")
 	})
+}
+
+func (p *Peer) Idleness() time.Duration {
+	ns := time.Unix(0, p.lastKeepAlive.Load())
+	return time.Since(ns)
 }
 
 func (p *Peer) SendKeepAlive() {
@@ -223,7 +227,9 @@ func (p *Peer) keepAliveLoop(ctx context.Context) error {
 			l.Warn("context done!", "error", ctx.Err())
 			return nil
 		case <-ticker.C:
-			if time.Since(p.lastKeepAlive) >= keepAliveInterval {
+			lastKeepAlive := time.Unix(0, p.lastKeepAlive.Load())
+
+			if time.Since(lastKeepAlive) >= keepAliveInterval {
 				p.SendKeepAlive()
 			}
 		}
@@ -447,7 +453,7 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 	p.stats.MessagesSent.Add(1)
 
 	if message == nil {
-		p.lastKeepAlive = time.Now()
+		p.lastKeepAlive.Store(time.Now().UnixNano())
 		return
 	}
 

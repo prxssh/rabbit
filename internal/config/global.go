@@ -4,10 +4,16 @@ import "sync/atomic"
 
 var cfg atomic.Value
 
-func Init() {
-	def := defaultConfig()
-	c := def
+func Init() error {
+	dcfg, err := defaultConfig()
+	if err != nil {
+		return err
+	}
+
+	c := dcfg
 	cfg.Store(&c)
+
+	return nil
 }
 
 // Load returns the current config (treat as read-only).

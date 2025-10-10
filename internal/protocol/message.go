@@ -83,7 +83,7 @@ func MessageUnchoke() *Message       { return &Message{ID: MsgUnchoke} }
 func MessageInterested() *Message    { return &Message{ID: MsgInterested} }
 func MessageNotInterested() *Message { return &Message{ID: MsgNotInterested} }
 
-func MessageHave(index int) *Message {
+func MessageHave(index uint32) *Message {
 	payload := make([]byte, 4)
 	binary.BigEndian.PutUint32(payload, uint32(index))
 
@@ -97,16 +97,16 @@ func MessageBitfield(bits []byte) *Message {
 	return &Message{ID: MsgBitfield, Payload: cp}
 }
 
-func MessageRequest(index, begin, length int) *Message {
+func MessageRequest(index, begin, length uint32) *Message {
 	payload := make([]byte, 12)
-	binary.BigEndian.PutUint32(payload[0:4], uint32(index))
-	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
-	binary.BigEndian.PutUint32(payload[8:12], uint32(length))
+	binary.BigEndian.PutUint32(payload[0:4], index)
+	binary.BigEndian.PutUint32(payload[4:8], begin)
+	binary.BigEndian.PutUint32(payload[8:12], length)
 
 	return &Message{ID: MsgRequest, Payload: payload}
 }
 
-func MessagePiece(index, begin int, block []byte) *Message {
+func MessagePiece(index, begin uint32, block []byte) *Message {
 	payload := make([]byte, 8+len(block))
 	binary.BigEndian.PutUint32(payload[0:4], uint32(index))
 	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))

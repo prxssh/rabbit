@@ -2,16 +2,17 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "rabbit",
   "outputfilename": "rabbit",
+  "frontend:dir": "../../frontend",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
-  "wailsjsdir": "./frontend/src/lib/wailsjs",
+  "wailsjsdir": "../../frontend/wailsjs",
   "author": {
     "name": "prxssh",
     "email": "hello@prxssh.com"
   },
   "info": {
-      "icon": "frontend/src/assets/images/rabbit-icon.png"
+      "icon": "../../frontend/src/assets/images/rabbit-icon.png"
   }
 }
