@@ -162,7 +162,6 @@ func (p *Peer) Run(ctx context.Context) error {
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error { return p.keepAliveLoop(gctx) })
 	g.Go(func() error { return p.readMessagesLoop(gctx) })
 	g.Go(func() error { return p.writeMessagesLoop(gctx) })
 	g.Go(func() error { return p.downloadUploadRatesLoop(gctx) })
@@ -235,29 +234,6 @@ func (p *Peer) SendPiece(piece, begin uint32, block []byte) {
 	p.enqueueMessage(protocol.MessagePiece(piece, begin, block))
 }
 
-func (p *Peer) keepAliveLoop(ctx context.Context) error {
-	l := p.log.With("component", "keep alive loop")
-	l.Debug("started")
-
-	keepAliveInterval := config.Load().KeepAliveInterval
-	ticker := time.NewTicker(keepAliveInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			l.Warn("context done, exiting!", "error", ctx.Err().Error())
-			return nil
-		case <-ticker.C:
-			lastAcitivyAt := time.Unix(0, p.lastAcitivyAt.Load())
-
-			if time.Since(lastAcitivyAt) >= keepAliveInterval {
-				p.SendKeepAlive()
-			}
-		}
-	}
-}
-
 func (p *Peer) readMessagesLoop(ctx context.Context) error {
 	l := p.log.With("component", "read message loop")
 	l.Debug("started")
@@ -288,14 +264,19 @@ func (p *Peer) readMessagesLoop(ctx context.Context) error {
 }
 
 func (p *Peer) writeMessagesLoop(ctx context.Context) error {
-	l := p.log.With("component", "write message loop")
+	l := p.log.With("component", "write messages loop")
 	l.Debug("started")
+
+	keepAliveInterval := config.Load().KeepAliveInterval
+	ticker := time.NewTicker(keepAliveInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			l.Warn("exiting; context done!", "error", ctx.Err().Error())
 			return nil
+
 		case message, ok := <-p.outbox:
 			if !ok {
 				l.Warn("exiting; outbox is closed")
@@ -305,6 +286,13 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 			if err := p.writeMessage(message); err != nil {
 				l.Warn("failed to write message, exiting loop", err.Error())
 				return err
+			}
+
+		case <-ticker.C:
+			lastAcitivyAt := time.Unix(0, p.lastAcitivyAt.Load())
+
+			if time.Since(lastAcitivyAt) >= keepAliveInterval {
+				p.SendKeepAlive()
 			}
 		}
 	}
