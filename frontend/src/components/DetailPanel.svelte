@@ -5,11 +5,15 @@
   import InfoCard from './ui/InfoCard.svelte'
   import TabGroup from './ui/TabGroup.svelte'
   import Section from './ui/Section.svelte'
+  import SwarmStats from './SwarmStats.svelte'
+  import TrackerStats from './TrackerStats.svelte'
   import { formatBytes, formatHash } from '../lib/utils'
 
   export let torrentData: torrent.Torrent | undefined
   export let peers: peer.PeerStats[]
   export let pieceStates: number[] = []
+  export let swarmStats: torrent.SwarmMetrics | undefined = undefined
+  export let trackerStats: torrent.TrackerMetrics | undefined = undefined
 
   let activeTab: 'details' | 'peers' = 'details'
 
@@ -27,6 +31,8 @@
   function handleTabChange(tabId: string) {
     activeTab = tabId as 'details' | 'peers'
   }
+
+  // TrackerStats renders its own computed metrics
 </script>
 
 <div class="detail-panel">
@@ -48,6 +54,11 @@
 
         {#if meta.announceList && meta.announceList.length > 0}
           <Section title="Trackers">
+            {#if trackerStats}
+              <div class="tracker-details">
+                <TrackerStats tracker={trackerStats} />
+              </div>
+            {/if}
             <div class="tracker-grid">
               {#each meta.announceList as tier, i}
                 {#if tier && tier.length > 0}
@@ -63,6 +74,11 @@
           </Section>
         {:else if meta.announce}
           <Section title="Tracker">
+            {#if trackerStats}
+              <div class="tracker-details">
+                <TrackerStats tracker={trackerStats} />
+              </div>
+            {/if}
             <div class="tracker-single">{meta.announce}</div>
           </Section>
         {/if}
@@ -80,6 +96,10 @@
           </Section>
         {/if}
       {:else if activeTab === 'peers'}
+        <Section title="Swarm Statistics">
+          <SwarmStats swarm={swarmStats} />
+        </Section>
+
         <Section title="Pieces">
           <PiecesHeatmap pieceStates={effectivePieceStates} totalPieces={totalPieces} />
         </Section>
@@ -173,6 +193,14 @@
     word-break: break-all;
   }
 
+  
+
+  
+
+  .tracker-details {
+    margin: 0 0 var(--spacing-3) 0;
+  }
+
   .files-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
@@ -204,6 +232,8 @@
     color: var(--color-text-disabled);
     white-space: nowrap;
   }
+
+  
 
   
 </style>

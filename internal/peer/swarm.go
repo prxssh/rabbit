@@ -75,6 +75,7 @@ func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 		pieceCount:  opts.PieceCount,
 		stats:       &SwarmStats{},
 		peers:       make(map[netip.AddrPort]*Peer),
+		connecting:  make(map[netip.AddrPort]struct{}),
 		admitPeerCh: make(chan netip.AddrPort, cfg.MaxPeers),
 		log:         opts.Log.With("src", "swarm"),
 	}, nil
@@ -87,9 +88,10 @@ func (s *Swarm) Run(ctx context.Context) error {
 	s.cancel = cancel
 
 	var wg sync.WaitGroup
-	wg.Go(func() { s.maintenanceLoop(ctx) })
-	wg.Go(func() { s.admitPeersLoop(ctx) })
-	wg.Go(func() { s.statsLoop(ctx) })
+	wg.Add(3)
+	go func() { defer wg.Done(); s.maintenanceLoop(ctx) }()
+	go func() { defer wg.Done(); s.admitPeersLoop(ctx) }()
+	go func() { defer wg.Done(); s.statsLoop(ctx) }()
 	wg.Wait()
 
 	return nil
@@ -148,67 +150,40 @@ func (s *Swarm) BroadcastHAVE(piece uint32) {
 	s.peerMu.RUnlock()
 }
 
-func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) error {
+func (s *Swarm) AddPeer(peer *Peer) {
 	if s.closed.Load() {
-		return nil
+		return
 	}
 
 	maxAllowedPeers := uint32(config.Load().MaxPeers)
 
-	s.peerMu.RLock()
-	_, exists := s.peers[addr]
-	s.peerMu.RUnlock()
-
-	if exists || s.stats.TotalPeers.Load() >= maxAllowedPeers {
-		return nil
-	}
-
-	s.stats.ConnectingPeers.Add(1)
-	peer, err := NewPeer(ctx, addr, &PeerOpts{
-		InfoHash:   s.infoHash,
-		Log:        s.log,
-		PieceCount: s.pieceCount,
-	})
-	s.stats.ConnectingPeers.Add(^uint32(0))
-	if err != nil {
-		s.stats.FailedConnection.Add(1)
-		return err
-	}
-
-	if s.stats.TotalPeers.Load() >= maxAllowedPeers {
-		return nil
-	}
-
 	s.peerMu.Lock()
-	s.peers[addr] = peer
-	s.peerMu.Unlock()
+	defer s.peerMu.Unlock()
 
+	if _, exists := s.peers[peer.addr]; exists {
+		return
+	}
+	if s.stats.TotalPeers.Load() >= maxAllowedPeers {
+		return
+	}
+
+	s.peers[peer.addr] = peer
 	s.stats.TotalPeers.Add(1)
-
-	go func(peer *Peer) {
-		defer func() {
-			peer.Stop()
-
-			s.peerMu.Lock()
-			delete(s.peers, peer.addr)
-			s.peerMu.Unlock()
-
-			s.stats.TotalPeers.Add(^uint32(0))
-		}()
-
-		peer.Run(ctx)
-	}(peer)
-
-	return nil
 }
 
 func (s *Swarm) RemovePeer(addr netip.AddrPort) {
 	s.peerMu.Lock()
-	peer := s.peers[addr]
+	peer, exists := s.peers[addr]
+	if !exists {
+		s.peerMu.Unlock()
+		return
+	}
 	delete(s.peers, addr)
 	s.peerMu.Unlock()
 
-	peer.Stop()
+	if peer != nil {
+		peer.Stop()
+	}
 	s.stats.TotalPeers.Add(^uint32(0))
 }
 
@@ -253,7 +228,7 @@ func (s *Swarm) admitPeersLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done, exiting", "error", ctx.Err())
+			l.Warn("context done, exiting", "error", ctx.Err().Error())
 			return nil
 
 		case peerAddr, ok := <-s.admitPeerCh:
@@ -262,10 +237,30 @@ func (s *Swarm) admitPeersLoop(ctx context.Context) error {
 				return nil
 			}
 
-			if err := s.AddPeer(ctx, peerAddr); err != nil {
-				l.Debug("failed to add peer", "addr", peerAddr, "error", err)
-				continue
-			}
+			go func(addr netip.AddrPort) {
+				s.stats.ConnectingPeers.Add(1)
+
+				peer, err := NewPeer(ctx, addr, &PeerOpts{
+					InfoHash:   s.infoHash,
+					Log:        s.log,
+					PieceCount: s.pieceCount,
+				})
+
+				s.stats.ConnectingPeers.Add(^uint32(0))
+
+				if err != nil {
+					l.Debug("peer connection failed", "addr", addr, "error", err.Error())
+					s.stats.FailedConnection.Add(1)
+					return
+				}
+
+				s.AddPeer(peer)
+
+				if err := peer.Run(ctx); err != nil {
+					l.Debug("peer disconnected", "addr", peer.addr, "error", err.Error())
+					s.RemovePeer(peer.addr)
+				}
+			}(peerAddr)
 		}
 	}
 }

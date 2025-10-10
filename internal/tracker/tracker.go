@@ -237,7 +237,7 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 	l.Debug("started")
 
 	consecutiveFailures := 0
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -245,12 +245,12 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			l.Warn("context done; exiting!", "error", ctx.Err())
 			sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer scancel()
 
 			params := t.onAnnounceStart()
 			params.Event = EventStopped
 			_, _ = t.Announce(sctx, params)
 
+			scancel()
 			return nil
 
 		case <-ticker.C:

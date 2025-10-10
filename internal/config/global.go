@@ -32,6 +32,7 @@ func Update(mut func(*Config)) *Config {
 
 // Swap replaces the global config atomically with the provided value.
 func Swap(next Config) *Config {
-	cfg.Store(&next)
-	return &next
+	c := next
+	cfg.Store(&c)
+	return &c
 }
