@@ -13,474 +13,479 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/internal/config"
-	"github.com/prxssh/rabbit/internal/piece"
+	"github.com/prxssh/rabbit/internal/protocol"
 	"github.com/prxssh/rabbit/internal/utils/bitfield"
 	"golang.org/x/sync/errgroup"
 )
 
-type Hooks struct {
-	OnNeedWork        func(addr netip.AddrPort)
-	OnHave            func(addr netip.AddrPort, piece uint32)
-	OnBitfield        func(addr netip.AddrPort, bf bitfield.Bitfield)
-	OnRequest         func(addr netip.AddrPort, piece, begin, length uint32) ([]byte, error)
-	OnBlockReceived   func(addr netip.AddrPort, piece, begin uint32, data []byte)
-	OnCheckInterested func(bf bitfield.Bitfield) bool
-}
-
-type PeerStats struct {
-	DownloadedBytes atomic.Int64
-	UploadedBytes   atomic.Int64
-	RequestsSent    atomic.Int64
-	BlocksReceived  atomic.Int64
-	BlocksFailed    atomic.Int64
-	LastActiveUnix  atomic.Int64
-}
-
-type Peer struct {
-	log         *slog.Logger
-	conn        net.Conn
-	addr        netip.AddrPort
-	connectedAt time.Time
-	state       uint32
-	closed      atomic.Bool
-	stats       *PeerStats
-	outQ        chan *Message
-	piecesBF    bitfield.Bitfield
-	piecesBFMu  sync.RWMutex
-	hooks       Hooks
-	pieceReqQ   chan *piece.Request
-}
-
-type PeerMetrics struct {
-	Addr           netip.AddrPort
-	Downloaded     int64
-	Uploaded       int64
-	RequestsSent   int
-	BlocksReceived int
-	BlocksFailed   int
-	LastActive     time.Time
-	ConnectedAt    time.Time
-	ConnectedFor   time.Duration
-	DownloadRate   int64
-	UploadRate     int64
-	IsChoked       bool
-	IsInterested   bool
-}
-
 const (
-	stateAmChoking      = 1 << 0
-	stateAmInterested   = 1 << 1
-	statePeerChoking    = 1 << 2
-	statePeerInterested = 1 << 3
+	maskAmChoking      = 1 << 0
+	maskAmInterested   = 1 << 1
+	maskPeerChoking    = 1 << 2
+	maskPeerInterested = 1 << 3
 )
 
-type PeerOpts struct {
-	Pieces    int
-	PieceReqQ <-chan piece.Request
-	PiecesBF  bitfield.Bitfield
-	InfoHash  [sha1.Size]byte
-	ClientID  [sha1.Size]byte
-	Log       *slog.Logger
-	Hooks     Hooks
+type Peer struct {
+	log           *slog.Logger
+	conn          net.Conn
+	addr          netip.AddrPort
+	state         uint32
+	stats         *PeerStats
+	bitfieldMu    sync.RWMutex
+	bitfield      bitfield.Bitfield
+	lastKeepAlive time.Time
+	outbox        chan *protocol.Message
+	closeOnce     sync.Once
+	stopped       atomic.Bool
+	cancel        context.CancelFunc
 }
 
-func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, error) {
-	log := opts.Log.With("src", "peer", "addr", addr.String())
+// PeerStats holds per-connection counters/timestamps. All counters are
+// atomic and monotonically increasing for the lifetime of a peer.
+type PeerStats struct {
+	// Downloaded is the total number of BYTES we have received from this
+	// peer.
+	Downloaded atomic.Uint64
 
-	conn, err := net.DialTimeout("tcp", addr.String(), config.Load().DialTimeout)
+	// Uploaded is the total number of BYTES we have sent to this peer.
+	Uploaded atomic.Uint64
+
+	// DownloadRate is an instantaneous or smoothed BYTES PER SECOND estimate
+	// of incoming data.
+	DownloadRate atomic.Uint64
+
+	// UploadRate is an instantaneous or smoothed BYTES PER SECOND estimate of
+	// outgoing data.
+	UploadRate atomic.Uint64
+
+	// MessagesReceived counts frames successfully READ from the socket,
+	// including keep-alives.
+	MessagesReceived atomic.Uint64
+
+	// MessagesSent counts frames successfully WRITTEN to the socket,
+	// including keep-alives.
+	MessagesSent atomic.Uint64
+
+	// RequestsSent counts REQUEST messages we successfully wrote to the
+	// socket.
+	RequestsSent atomic.Uint64
+
+	// RequestsReceived counts REQUEST messages received from the peer.
+	RequestsReceived atomic.Uint64
+
+	// RequestsCancelled is the total number of CANCELs (both directions).
+	RequestsCancelled atomic.Uint64
+
+	// RequestsTimeout counts our detected timeouts for requests we sent to
+	// this peer.
+	RequestsTimeout atomic.Uint64
+
+	// PiecesReceived counts PIECE messages we received (i.e., completed
+	// blocks from the peer).
+	PiecesReceived atomic.Uint64
+
+	// PiecesSent counts PIECE messages we successfully wrote (i.e., blocks
+	// uploaded to the peer).
+	PiecesSent atomic.Uint64
+
+	// Errors counts protocol or I/O errors local to this peer connection
+	// (failed reads/writes, malformed messages, etc.).
+	Errors atomic.Uint64
+
+	// ConnectedAt is the wall-clock time when the TCP connection and
+	// handshake succeeded.
+	ConnectedAt time.Time
+
+	// DisconnectedAt is the wall-clock time when the connection was
+	// closed (local or remote).
+	DisconnectedAt time.Time
+}
+
+type PeerOpts struct {
+	Log        *slog.Logger
+	PieceCount int
+	InfoHash   [sha1.Size]byte
+	ClientID   [sha1.Size]byte
+}
+
+func NewPeer(ctx context.Context, addr string, opts *PeerOpts) (*Peer, error) {
+	log := opts.Log.With("src", "peer", "addr", addr)
+
+	conn, err := net.DialTimeout("tcp", addr, config.Load().DialTimeout)
 	if err != nil {
+		log.Debug("peer connection failed", "error", err)
 		return nil, err
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
-	_ = conn.SetWriteDeadline(time.Now().Add(config.Load().WriteTimeout))
-
-	h := NewHandshake(opts.InfoHash, opts.ClientID)
-	if err := h.Perform(conn); err != nil {
+	handshake := protocol.NewHandshake(opts.InfoHash, opts.ClientID)
+	if _, err := handshake.Exchange(conn, true); err != nil {
+		log.Debug("peer handshake failed", "error", err)
 		_ = conn.Close()
 		return nil, err
 	}
-
-	if err := WriteMessage(conn, MessageBitfield(opts.PiecesBF)); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-
-	_ = conn.SetReadDeadline(time.Time{})
-	_ = conn.SetWriteDeadline(time.Time{})
-
-	now := time.Now()
 
 	p := &Peer{
-		log:         log,
-		conn:        conn,
-		addr:        addr,
-		connectedAt: now,
-		stats:       &PeerStats{},
-		piecesBF:    bitfield.New(opts.Pieces),
-		pieceReqQ:   make(chan *piece.Request, 50),
-		outQ:        make(chan *Message, config.Load().PeerOutboundQueueBacklog),
-		hooks:       opts.Hooks,
+		log:           log,
+		conn:          conn,
+		lastKeepAlive: time.Now(),
+		stats:         &PeerStats{},
+		bitfield:      bitfield.New(opts.PieceCount),
+		outbox:        make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
 	}
-
-	if !p.areHooksValid() {
-		return nil, errors.New("hooks is required and should be non-nil")
-	}
-
-	atomic.StoreUint32(&p.state, stateAmChoking|statePeerChoking)
-	p.stats.LastActiveUnix.Store(now.UnixNano())
-
-	log.Debug("peer connected")
+	p.setState(maskAmChoking|maskPeerChoking, true)
+	p.stats.ConnectedAt = time.Now()
 
 	return p, nil
 }
 
-func (p *Peer) areHooksValid() bool {
-	return p.hooks.OnNeedWork != nil &&
-		p.hooks.OnBlockReceived != nil &&
-		p.hooks.OnHave != nil &&
-		p.hooks.OnRequest != nil &&
-		p.hooks.OnBitfield != nil &&
-		p.hooks.OnCheckInterested != nil
-}
-
 func (p *Peer) Run(ctx context.Context) error {
-	eg, ctx := errgroup.WithContext(ctx)
+	defer p.Stop()
 
-	eg.Go(func() error { return p.readLoop(ctx) })
-	eg.Go(func() error { return p.writeLoop(ctx) })
-	eg.Go(func() error { return p.pieceRequestLoop(ctx) })
+	ctx, cancel := context.WithCancel(ctx)
+	p.cancel = cancel
 
-	err := eg.Wait()
-	p.cleanup()
-	return err
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error { return p.keepAliveLoop(gctx) })
+	g.Go(func() error { return p.readMessagesLoop(gctx) })
+	g.Go(func() error { return p.writeMessagesLoop(gctx) })
+	g.Go(func() error { return p.downloadUploadRatesLoop(gctx) })
+
+	return g.Wait()
 }
 
-func (p *Peer) Metrics() PeerMetrics {
-	connectedFor := time.Since(p.connectedAt)
-	sec := int64(connectedFor.Seconds())
+func (p *Peer) Stop() {
+	p.closeOnce.Do(func() {
+		p.stopped.Store(true)
+		p.cancel()
 
-	var downloadRate, uploadRate int64
-	if sec > 0 {
-		downloadRate = p.stats.DownloadedBytes.Load() / sec
-		uploadRate = p.stats.UploadedBytes.Load() / sec
-	}
-
-	return PeerMetrics{
-		Addr:           p.addr,
-		DownloadRate:   downloadRate,
-		UploadRate:     uploadRate,
-		ConnectedAt:    p.connectedAt,
-		ConnectedFor:   connectedFor,
-		IsChoked:       p.peerChoking(),
-		IsInterested:   p.amInterested(),
-		Downloaded:     p.stats.DownloadedBytes.Load(),
-		Uploaded:       p.stats.UploadedBytes.Load(),
-		RequestsSent:   int(p.stats.RequestsSent.Load()),
-		BlocksReceived: int(p.stats.BlocksReceived.Load()),
-		BlocksFailed:   int(p.stats.BlocksFailed.Load()),
-		LastActive:     time.Unix(0, p.stats.LastActiveUnix.Load()),
-	}
+		_ = p.conn.Close()
+		close(p.outbox)
+		p.stats.DisconnectedAt = time.Now()
+	})
 }
 
-func (p *Peer) cleanup() {
-	if !p.closed.CompareAndSwap(false, true) {
+func (p *Peer) SendKeepAlive() {
+	p.outbox <- nil
+}
+
+func (p *Peer) SendChoke() {
+	p.enqueueMessage(protocol.MessageChoke())
+}
+
+func (p *Peer) SendUnchoke() {
+	p.enqueueMessage(protocol.MessageUnchoke())
+}
+
+func (p *Peer) SendInterested() {
+	p.enqueueMessage(protocol.MessageInterested())
+}
+
+func (p *Peer) SendNotInterested() {
+	p.enqueueMessage(protocol.MessageNotInterested())
+}
+
+func (p *Peer) SendHave(piece uint32) {
+	p.enqueueMessage(protocol.MessageHave(piece))
+}
+
+func (p *Peer) SendBitfield(bf *bitfield.Bitfield) {
+	p.enqueueMessage(protocol.MessageBitfield(bf.Bytes()))
+}
+
+func (p *Peer) SendRequest(piece, begin, length uint32) {
+	if p.PeerChoking() {
 		return
 	}
 
-	close(p.outQ)
-	p.conn.Close()
+	p.enqueueMessage(protocol.MessageRequest(piece, begin, length))
 }
+
+func (p *Peer) SendPiece(piece, begin uint32, block []byte) {
+	if p.PeerChoking() {
+		return
+	}
+
+	p.enqueueMessage(protocol.MessagePiece(piece, begin, block))
+}
+
+func (p *Peer) keepAliveLoop(ctx context.Context) error {
+	l := p.log.With("component", "keep alive loop")
+	l.Debug("started")
+
+	keepAliveInterval := config.Load().KeepAliveInterval
+	ticker := time.NewTicker(keepAliveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.Warn("context done!", "error", ctx.Err())
+			return nil
+		case <-ticker.C:
+			if time.Since(p.lastKeepAlive) >= keepAliveInterval {
+				p.SendKeepAlive()
+			}
+		}
+	}
+}
+
+func (p *Peer) readMessagesLoop(ctx context.Context) error {
+	l := p.log.With("component", "read message loop")
+	l.Debug("started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.Warn("context done!", "error", ctx.Err())
+			return nil
+		default:
+		}
+
+		_ = p.conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
+		message, err := protocol.ReadMessage(p.conn)
+		if err != nil {
+			l.Warn("read messages failed", "error", err)
+
+			p.stats.Errors.Add(1)
+			return err
+		}
+		p.stats.MessagesReceived.Add(1)
+		_ = p.conn.SetReadDeadline(time.Time{})
+
+		if err := p.handleMessage(message); err != nil {
+			l.Warn("handle message failed", "error", err)
+			return err
+		}
+	}
+}
+
+func (p *Peer) writeMessagesLoop(ctx context.Context) error {
+	l := p.log.With("component", "write message loop")
+	l.Debug("started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.Warn("exiting; context done!", "error", ctx.Err())
+			return nil
+		case message, ok := <-p.outbox:
+			if !ok {
+				l.Warn("exiting; outbox is closed")
+				return nil
+			}
+
+			if err := protocol.WriteMessage(p.conn, message); err != nil {
+				l.Warn("exiting; unable to send message to connection!",
+					"error", err,
+				)
+				p.stats.Errors.Add(1)
+				return err
+			}
+
+			p.onMessageWritten(message)
+		}
+	}
+}
+
+// Rate calculation (UploadRate / DownloadRate)
+//
+// We maintain two monotonic byte counters per peer: Uploaded and Downloaded.
+// A 1s ticker snapshots these totals and computes a delta from the previous
+// snapshot. The delta over the tick interval is the instantaneous throughput
+// in bytes/sec:
+//
+//	instant = (curTotal - lastTotal) / elapsedSeconds
+//
+// To reduce jitter, we smooth the instantaneous value with an exponential
+// moving average (EMA):
+//
+//	emaNext = α*instant + (1-α)*emaPrev
+//
+// where 0<α≤1. Higher α reacts faster; lower α is smoother. If you prefer a
+// raw per-second rate, set α=1 (emaNext == instant).
+//
+// Notes:
+//   - Counters only increase; unsigned subtraction yields the correct delta.
+//   - If the ticker drifts, divide by the measured elapsedSeconds instead of
+//     assuming exactly 1s.
+//   - Store the final bytes/sec into UploadRate and DownloadRate atomically.
+//   - Pauses naturally produce zero deltas (zero rate).
+func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
+	l := p.log.With("component", "download-upload rate loop")
+	l.Debug("started")
+
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+
+	lastUp := p.stats.Uploaded.Load()
+	lastDown := p.stats.Downloaded.Load()
+
+	const alpha = 0.2
+	var (
+		upEMA   uint64
+		downEMA uint64
+		inited  bool
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.Warn("context done!", "error", ctx.Err())
+			return nil
+		case <-t.C:
+			curUp := p.stats.Uploaded.Load()
+			curDown := p.stats.Downloaded.Load()
+
+			instUp := curUp - lastUp
+			instDown := curDown - lastDown
+
+			if !inited {
+				upEMA = instUp
+				downEMA = instDown
+				inited = true
+			} else {
+				upEMA = uint64(alpha*float64(instUp) + (1-alpha)*float64(upEMA))
+				downEMA = uint64(alpha*float64(instDown) + (1-alpha)*float64(downEMA))
+			}
+
+			p.stats.UploadRate.Store(upEMA)
+			p.stats.DownloadRate.Store(downEMA)
+		}
+	}
+}
+
+func (p *Peer) AmChoking() bool     { return p.getState(maskAmChoking) }
+func (p *Peer) AmInterested() bool  { return p.getState(maskAmInterested) }
+func (p *Peer) PeerChoking() bool   { return p.getState(maskPeerChoking) }
+func (p *Peer) PeerIntersted() bool { return p.getState(maskPeerInterested) }
+
+func (p *Peer) getState(mask uint32) bool { return atomic.LoadUint32(&p.state)&mask != 0 }
 
 func (p *Peer) setState(mask uint32, on bool) {
 	for {
 		old := atomic.LoadUint32(&p.state)
-		var next uint32
+		var new uint32
 		if on {
-			next = old | mask
+			new = old | mask
 		} else {
-			next = old &^ mask
+			new = old &^ mask
 		}
 
-		if atomic.CompareAndSwapUint32(&p.state, old, next) {
+		if atomic.CompareAndSwapUint32(&p.state, old, new) {
 			return
 		}
 	}
 }
 
-func (p *Peer) getState(mask uint32) bool {
-	return atomic.LoadUint32(&p.state)&mask != 0
+func (p *Peer) handleMessage(message *protocol.Message) error {
+	if protocol.IsKeepAlive(message) {
+		return nil
+	}
+
+	switch message.ID {
+	case protocol.MsgChoke:
+		p.setState(maskPeerChoking, true)
+	case protocol.MsgUnchoke:
+		p.setState(maskPeerChoking, false)
+	case protocol.MsgInterested:
+		p.setState(maskPeerInterested, true)
+	case protocol.MsgNotInterested:
+		p.setState(maskPeerInterested, false)
+	case protocol.MsgBitfield:
+		bf := bitfield.FromBytes(message.Payload)
+		p.bitfieldMu.Lock()
+		p.bitfield = bf
+		p.bitfieldMu.Unlock()
+	case protocol.MsgHave:
+		piece, ok := message.ParseHave()
+		if !ok {
+			return errors.New("malformed have message")
+		}
+
+		p.bitfieldMu.Lock()
+		p.bitfield.Set(int(piece))
+		p.bitfieldMu.Unlock()
+	case protocol.MsgPiece:
+		_, _, block, ok := message.ParsePiece()
+		if !ok {
+			return errors.New("malformed piece message")
+		}
+
+		p.stats.PiecesReceived.Add(1)
+		p.stats.Downloaded.Add(uint64(len(block)))
+	case protocol.MsgRequest:
+		_, _, _, ok := message.ParseRequest()
+		if !ok {
+			return errors.New("malformed request message")
+		}
+
+		p.stats.RequestsReceived.Add(1)
+	case protocol.MsgCancel:
+		p.stats.RequestsCancelled.Add(1)
+	default:
+		return fmt.Errorf("invalid message id '%d'", message.ID)
+	}
+
+	return nil
 }
 
-func (p *Peer) amChoking() bool     { return p.getState(stateAmChoking) }
-func (p *Peer) amInterested() bool  { return p.getState(stateAmInterested) }
-func (p *Peer) peerChoking() bool   { return p.getState(statePeerChoking) }
-func (p *Peer) peerIntersted() bool { return p.getState(statePeerInterested) }
+func (p *Peer) enqueueMessage(message *protocol.Message) bool {
+	if p.stopped.Load() {
+		return false
+	}
 
-func (p *Peer) readLoop(ctx context.Context) error {
-	l := p.log.With("src", "peer.read.loop")
-	l.Info("started")
-
-	lastReceived := time.Now()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		message, err := p.readMessage()
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			if time.Since(lastReceived) > config.Load().PeerHeartbeatInterval {
-				return context.DeadlineExceeded
-			}
-			continue
-		}
-		if err != nil {
-			return err
-		}
-
-		lastReceived = time.Now()
-
-		if message == nil {
-			continue
-		}
-
-		switch message.ID {
-		case MsgChoke:
-			p.setState(statePeerChoking, true)
-		case MsgUnchoke:
-			p.setState(statePeerChoking, false)
-			p.hooks.OnNeedWork(p.addr)
-		case MsgInterested:
-			p.setState(statePeerInterested, true)
-			p.hooks.OnNeedWork(p.addr)
-		case MsgNotInterested:
-			p.setState(statePeerInterested, false)
-		case MsgBitfield:
-			bf := bitfield.FromBytes(message.Payload)
-			p.piecesBFMu.Lock()
-			p.piecesBF = bf
-			p.piecesBFMu.Unlock()
-
-			p.hooks.OnBitfield(p.addr, bf)
-			if p.hooks.OnCheckInterested(bf) {
-				p.sendInterested()
-			}
-			p.hooks.OnNeedWork(p.addr)
-		case MsgHave:
-			pieceIdx, ok := message.ParseHave()
-			if !ok {
-				continue
-			}
-
-			p.piecesBFMu.Lock()
-			p.piecesBF.Set(int(pieceIdx))
-			// Make copy while holding lock
-			bf := make(bitfield.Bitfield, len(p.piecesBF))
-			copy(bf, p.piecesBF)
-			p.piecesBFMu.Unlock()
-
-			p.hooks.OnHave(p.addr, pieceIdx)
-			if p.hooks.OnCheckInterested(bf) {
-				p.sendInterested()
-			}
-			p.hooks.OnNeedWork(p.addr)
-		case MsgPiece:
-			piece, begin, data, ok := message.ParsePiece()
-			if !ok {
-				p.stats.BlocksFailed.Add(1)
-				continue
-			}
-
-			p.stats.BlocksReceived.Add(1)
-			p.stats.DownloadedBytes.Add(int64(len(data)))
-
-			p.hooks.OnBlockReceived(p.addr, piece, begin, data)
-			p.hooks.OnNeedWork(p.addr)
-		case MsgRequest:
-			idx, begin, length, ok := message.ParseRequest()
-			if !ok {
-				continue
-			}
-
-			data, err := p.hooks.OnRequest(p.addr, idx, begin, length)
-			if err != nil {
-				l.Error("failed to fetch request block",
-					"error", err,
-					"piece", idx,
-					"begin", begin,
-					"length", length,
-				)
-				continue
-			}
-
-			l.Info("seeded block to peer",
-				"piece", idx,
-				"begin", begin,
-				"length", length,
-			)
-
-			p.outQ <- MessagePiece(int(idx), int(begin), data)
-			p.stats.UploadedBytes.Add(int64(len(data)))
-
-		default:
-			l.Warn("invalid message received", "message", message)
-		}
+	select {
+	case p.outbox <- message:
+		return true
+	default:
+		return false
 	}
 }
 
-func (p *Peer) writeLoop(ctx context.Context) error {
-	l := p.log.With("src", "peer.write.loop")
-	l.Info("started")
+func (p *Peer) onMessageWritten(message *protocol.Message) {
+	p.stats.MessagesSent.Add(1)
 
-	keepAliveTicker := time.NewTicker(config.Load().KeepAliveInterval)
-	defer keepAliveTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case message, ok := <-p.outQ:
-			if !ok {
-				l.Warn("outq closed; exiting loop")
-				return nil
-			}
-
-			if err := p.writeMessage(message); err != nil {
-				l.Warn("write message failed; exiting loop", "error", err)
-				return err
-			}
-
-		case <-keepAliveTicker.C:
-			if err := p.writeMessage(nil); err != nil {
-				l.Warn("write keepalive failed; exiting loop", "error", err)
-				return err
-			}
-		}
-	}
-}
-
-func (p *Peer) pieceRequestLoop(ctx context.Context) error {
-	l := p.log.With("src", "peer.piece_request.loop")
-	l.Info("started")
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case req, ok := <-p.pieceReqQ:
-			if !ok {
-				l.Warn("pieceReqQ closed; exiting loop")
-				return nil
-			}
-
-			p.outQ <- MessageRequest(req.Piece, req.Begin, req.Length)
-			p.stats.RequestsSent.Add(1)
-		}
-	}
-}
-
-func (p *Peer) sendInterested() {
-	if p.closed.Load() {
+	if message == nil {
+		p.lastKeepAlive = time.Now()
 		return
 	}
 
-	if p.amInterested() {
-		return
-	}
+	switch message.ID {
+	case protocol.MsgChoke:
+		p.setState(maskAmChoking, true)
 
-	p.setState(stateAmInterested, true)
-	p.outQ <- MessageInterested()
-}
+	case protocol.MsgUnchoke:
+		p.setState(maskAmChoking, false)
 
-func (p *Peer) sendNotInterested() {
-	if p.closed.Load() {
-		return
-	}
+	case protocol.MsgInterested:
+		p.setState(maskAmInterested, true)
 
-	if !p.amInterested() {
-		return
-	}
+	case protocol.MsgNotInterested:
+		p.setState(maskAmInterested, false)
 
-	p.setState(stateAmInterested, false)
-	p.outQ <- MessageNotInterested()
-}
+	case protocol.MsgHave:
+		// nothing to do
 
-func (p *Peer) sendHave(piece int) {
-	if p.closed.Load() {
-		return
-	}
+	case protocol.MsgBitfield:
+		// nothing to do
 
-	p.outQ <- MessageHave(piece)
-}
+	case protocol.MsgRequest:
+		p.stats.RequestsSent.Add(1)
 
-func (p *Peer) sendCancel(piece, begin, length int) {
-	if p.closed.Load() {
-		return
-	}
-
-	p.outQ <- MessageCancel(piece, begin, length)
-}
-
-func (p *Peer) Bitfield() bitfield.Bitfield {
-	p.piecesBFMu.RLock()
-	defer p.piecesBFMu.RUnlock()
-
-	bf := make(bitfield.Bitfield, len(p.piecesBF))
-	copy(bf, p.piecesBF)
-	return bf
-}
-
-func (p *Peer) writeMessage(message *Message) error {
-	_ = p.conn.SetWriteDeadline(time.Now().Add(config.Load().WriteTimeout))
-	defer p.conn.SetWriteDeadline(time.Time{})
-
-	err := WriteMessage(p.conn, message)
-	if err == nil {
-		p.stats.LastActiveUnix.Store(time.Now().UnixNano())
-	}
-	return err
-}
-
-func (p *Peer) readMessage() (*Message, error) {
-	_ = p.conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
-	defer p.conn.SetReadDeadline(time.Time{})
-
-	message, err := ReadMessage(p.conn)
-	if err == nil {
-		p.stats.LastActiveUnix.Store(time.Now().UnixNano())
-	}
-	return message, err
-}
-
-func (p *Peer) formatMessageDetails(msg *Message) string {
-	if msg == nil {
-		return "keep-alive"
-	}
-
-	switch msg.ID {
-	case MsgHave:
-		if piece, ok := msg.ParseHave(); ok {
-			return fmt.Sprintf("#%d", piece)
+	case protocol.MsgPiece:
+		// Piece upload truly happened; count piece + payload bytes
+		// Payload layout: 4(index) + 4(begin) + <block>
+		if n := len(message.Payload); n >= 8 {
+			blockLen := n - 8
+			p.stats.PiecesSent.Add(1)
+			p.stats.Uploaded.Add(uint64(blockLen))
 		}
-	case MsgRequest:
-		if idx, begin, length, ok := msg.ParseRequest(); ok {
-			return fmt.Sprintf("#%d @%d %dKB", idx, begin, length/1024)
-		}
-	case MsgPiece:
-		if idx, begin, block, ok := msg.ParsePiece(); ok {
-			return fmt.Sprintf("#%d @%d %dKB", idx, begin, len(block)/1024)
-		}
-	case MsgCancel:
-		if idx, begin, length, ok := msg.ParseRequest(); ok {
-			return fmt.Sprintf("#%d @%d %dKB", idx, begin, length/1024)
-		}
-	case MsgBitfield:
-		return fmt.Sprintf("%d bytes", len(msg.Payload))
-	}
 
-	return ""
+	case protocol.MsgCancel:
+		p.stats.RequestsCancelled.Add(1)
+
+	default:
+		// unknown ID; nothing to do
+	}
 }
