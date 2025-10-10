@@ -232,6 +232,66 @@ export namespace torrent {
 		    return a;
 		}
 	}
+	export class SwarmMetrics {
+	    totalPeers: number;
+	    connectingPeers: number;
+	    failedConnection: number;
+	    unchokedPeers: number;
+	    interestedPeers: number;
+	    uploadingTo: number;
+	    downloadingFrom: number;
+	    totalDownloaded: number;
+	    totalUploaded: number;
+	    downloadRate: number;
+	    uploadRate: number;
+
+	    static createFrom(source: any = {}) {
+	        return new SwarmMetrics(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalPeers = source["totalPeers"];
+	        this.connectingPeers = source["connectingPeers"];
+	        this.failedConnection = source["failedConnection"];
+	        this.unchokedPeers = source["unchokedPeers"];
+	        this.interestedPeers = source["interestedPeers"];
+	        this.uploadingTo = source["uploadingTo"];
+	        this.downloadingFrom = source["downloadingFrom"];
+	        this.totalDownloaded = source["totalDownloaded"];
+	        this.totalUploaded = source["totalUploaded"];
+	        this.downloadRate = source["downloadRate"];
+	        this.uploadRate = source["uploadRate"];
+	    }
+	}
+
+	export class TrackerMetrics {
+	    totalAnnounces: number;
+	    successfulAnnounces: number;
+	    failedAnnounces: number;
+	    totalPeersReceived: number;
+	    currentSeeders: number;
+	    currentLeechers: number;
+	    lastAnnounce: string;
+	    lastSuccess: string;
+
+	    static createFrom(source: any = {}) {
+	        return new TrackerMetrics(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalAnnounces = source["totalAnnounces"];
+	        this.successfulAnnounces = source["successfulAnnounces"];
+	        this.failedAnnounces = source["failedAnnounces"];
+	        this.totalPeersReceived = source["totalPeersReceived"];
+	        this.currentSeeders = source["currentSeeders"];
+	        this.currentLeechers = source["currentLeechers"];
+	        this.lastAnnounce = source["lastAnnounce"];
+	        this.lastSuccess = source["lastSuccess"];
+	    }
+	}
+
 	export class Stats {
 	    downloaded: number;
 	    uploaded: number;
@@ -240,11 +300,13 @@ export namespace torrent {
 	    progress: number;
 	    peers: peer.PeerMetrics[];
 	    pieceStates: number[];
-	
+	    swarm: SwarmMetrics;
+	    tracker: TrackerMetrics;
+
 	    static createFrom(source: any = {}) {
 	        return new Stats(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.downloaded = source["downloaded"];
@@ -254,8 +316,10 @@ export namespace torrent {
 	        this.progress = source["progress"];
 	        this.peers = this.convertValues(source["peers"], peer.PeerMetrics);
 	        this.pieceStates = source["pieceStates"];
+	        this.swarm = this.convertValues(source["swarm"], SwarmMetrics);
+	        this.tracker = this.convertValues(source["tracker"], TrackerMetrics);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;

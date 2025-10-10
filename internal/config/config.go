@@ -228,6 +228,7 @@ func defaultConfig() (Config, error) {
 		EnableDHT:                  false,
 		EnablePEX:                  false,
 		HasIPV6:                    hasIPV6,
+		PeerInactivityDuration:     2 * time.Minute,
 	}, nil
 }
 

@@ -33,7 +33,7 @@ type Peer struct {
 	stats         *PeerStats
 	bitfieldMu    sync.RWMutex
 	bitfield      bitfield.Bitfield
-	lastKeepAlive atomic.Int64
+	lastAcitivyAt atomic.Int64
 	outbox        chan *protocol.Message
 	closeOnce     sync.Once
 	stopped       atomic.Bool
@@ -124,12 +124,13 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, e
 	p := &Peer{
 		log:      log,
 		conn:     conn,
+		addr:     addr,
 		stats:    &PeerStats{},
 		bitfield: bitfield.New(opts.PieceCount),
 		outbox:   make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
 	}
 	p.setState(maskAmChoking|maskPeerChoking, true)
-	p.lastKeepAlive.Store(time.Now().UnixNano())
+	p.lastAcitivyAt.Store(time.Now().UnixNano())
 	p.stats.ConnectedAt = time.Now()
 
 	return p, nil
@@ -154,7 +155,10 @@ func (p *Peer) Run(ctx context.Context) error {
 func (p *Peer) Stop() {
 	p.closeOnce.Do(func() {
 		p.stopped.Store(true)
-		p.cancel()
+
+		if p.cancel != nil {
+			p.cancel()
+		}
 
 		_ = p.conn.Close()
 		close(p.outbox)
@@ -165,12 +169,12 @@ func (p *Peer) Stop() {
 }
 
 func (p *Peer) Idleness() time.Duration {
-	ns := time.Unix(0, p.lastKeepAlive.Load())
+	ns := time.Unix(0, p.lastAcitivyAt.Load())
 	return time.Since(ns)
 }
 
 func (p *Peer) SendKeepAlive() {
-	p.outbox <- nil
+	p.enqueueMessage(nil)
 }
 
 func (p *Peer) SendChoke() {
@@ -224,12 +228,12 @@ func (p *Peer) keepAliveLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done!", "error", ctx.Err())
+			l.Warn("context done, exiting!", "error", ctx.Err().Error())
 			return nil
 		case <-ticker.C:
-			lastKeepAlive := time.Unix(0, p.lastKeepAlive.Load())
+			lastAcitivyAt := time.Unix(0, p.lastAcitivyAt.Load())
 
-			if time.Since(lastKeepAlive) >= keepAliveInterval {
+			if time.Since(lastAcitivyAt) >= keepAliveInterval {
 				p.SendKeepAlive()
 			}
 		}
@@ -243,24 +247,23 @@ func (p *Peer) readMessagesLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done!", "error", ctx.Err())
+			l.Warn("context done!", "error", ctx.Err().Error())
 			return nil
 		default:
 		}
 
-		_ = p.conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
-		message, err := protocol.ReadMessage(p.conn)
+		message, err := p.readMessage()
 		if err != nil {
-			l.Warn("read messages failed", "error", err)
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
 
-			p.stats.Errors.Add(1)
+			l.Warn("failed to read message, exiting!", "error", err.Error())
 			return err
 		}
-		p.stats.MessagesReceived.Add(1)
-		_ = p.conn.SetReadDeadline(time.Time{})
 
 		if err := p.handleMessage(message); err != nil {
-			l.Warn("handle message failed", "error", err)
+			l.Warn("handle message failed", "error", err.Error())
 			return err
 		}
 	}
@@ -273,7 +276,7 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("exiting; context done!", "error", ctx.Err())
+			l.Warn("exiting; context done!", "error", ctx.Err().Error())
 			return nil
 		case message, ok := <-p.outbox:
 			if !ok {
@@ -281,15 +284,10 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 				return nil
 			}
 
-			if err := protocol.WriteMessage(p.conn, message); err != nil {
-				l.Warn("exiting; unable to send message to connection!",
-					"error", err,
-				)
-				p.stats.Errors.Add(1)
+			if err := p.writeMessage(message); err != nil {
+				l.Warn("failed to write message, exiting loop", err.Error())
 				return err
 			}
-
-			p.onMessageWritten(message)
 		}
 	}
 }
@@ -337,7 +335,7 @@ func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done!", "error", ctx.Err())
+			l.Warn("context done!", "error", ctx.Err().Error())
 			return nil
 		case <-t.C:
 			curUp := p.stats.Uploaded.Load()
@@ -357,8 +355,41 @@ func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
 
 			p.stats.UploadRate.Store(upEMA)
 			p.stats.DownloadRate.Store(downEMA)
+
+			// Update baseline for next iteration
+			lastUp = curUp
+			lastDown = curDown
 		}
 	}
+}
+
+func (p *Peer) readMessage() (*protocol.Message, error) {
+	_ = p.conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
+	defer p.conn.SetReadDeadline(time.Time{})
+
+	message, err := protocol.ReadMessage(p.conn)
+	if err != nil {
+		p.stats.Errors.Add(1)
+		return nil, err
+	}
+
+	p.stats.MessagesReceived.Add(1)
+	p.lastAcitivyAt.Store(time.Now().UnixNano())
+
+	return message, nil
+}
+
+func (p *Peer) writeMessage(message *protocol.Message) error {
+	_ = p.conn.SetWriteDeadline(time.Now().Add(config.Load().WriteTimeout))
+	defer p.conn.SetWriteDeadline(time.Time{})
+
+	if err := protocol.WriteMessage(p.conn, message); err != nil {
+		p.stats.Errors.Add(1)
+		return err
+	}
+
+	p.onMessageWritten(message)
+	return nil
 }
 
 func (p *Peer) AmChoking() bool     { return p.getState(maskAmChoking) }
@@ -451,9 +482,9 @@ func (p *Peer) enqueueMessage(message *protocol.Message) bool {
 
 func (p *Peer) onMessageWritten(message *protocol.Message) {
 	p.stats.MessagesSent.Add(1)
+	p.lastAcitivyAt.Store(time.Now().UnixNano())
 
 	if message == nil {
-		p.lastKeepAlive.Store(time.Now().UnixNano())
 		return
 	}
 
