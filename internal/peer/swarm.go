@@ -249,7 +249,13 @@ func (s *Swarm) admitPeersLoop(ctx context.Context) error {
 				s.stats.ConnectingPeers.Add(^uint32(0))
 
 				if err != nil {
-					l.Debug("peer connection failed", "addr", addr, "error", err.Error())
+					l.Debug(
+						"peer connection failed",
+						"addr",
+						addr,
+						"error",
+						err.Error(),
+					)
 					s.stats.FailedConnection.Add(1)
 					return
 				}
@@ -257,7 +263,13 @@ func (s *Swarm) admitPeersLoop(ctx context.Context) error {
 				s.AddPeer(peer)
 
 				if err := peer.Run(ctx); err != nil {
-					l.Debug("peer disconnected", "addr", peer.addr, "error", err.Error())
+					l.Debug(
+						"peer disconnected",
+						"addr",
+						peer.addr,
+						"error",
+						err.Error(),
+					)
 					s.RemovePeer(peer.addr)
 				}
 			}(peerAddr)

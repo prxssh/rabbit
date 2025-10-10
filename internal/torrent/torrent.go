@@ -148,7 +148,7 @@ func (t *Torrent) GetStats() *Stats {
 		Uploaded:     int64(swarmStats.TotalUploaded),
 		DownloadRate: int64(swarmStats.DownloadRate),
 		UploadRate:   int64(swarmStats.UploadRate),
-		Progress:     0.0, // TODO: Calculate based on piece completion
+		Progress:     0.0,     // TODO: Calculate based on piece completion
 		PieceStates:  []int{}, // TODO: Implement piece state tracking
 		Swarm: SwarmMetrics{
 			TotalPeers:       swarmStats.TotalPeers,
