@@ -82,7 +82,7 @@ func (s *Swarm) RegisterRefillPeerHook(hook func()) {
 }
 
 func (s *Swarm) Run(ctx context.Context) error {
-	defer s.Stop()
+	defer s.Close()
 
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
@@ -94,6 +94,17 @@ func (s *Swarm) Run(ctx context.Context) error {
 	wg.Wait()
 
 	return nil
+}
+
+func (s *Swarm) Close() {
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		s.cancel()
+
+		close(s.admitPeerCh)
+
+		s.log.Debug("stopped")
+	})
 }
 
 func (s *Swarm) Stats() SwarmMetrics {
@@ -113,7 +124,6 @@ func (s *Swarm) Stats() SwarmMetrics {
 	}
 }
 
-// PeerMetrics returns a snapshot of all known peers' metrics.
 func (s *Swarm) PeerMetrics() []PeerMetrics {
 	s.peerMu.RLock()
 	defer s.peerMu.RUnlock()
@@ -124,17 +134,6 @@ func (s *Swarm) PeerMetrics() []PeerMetrics {
 	}
 
 	return out
-}
-
-func (s *Swarm) Stop() {
-	s.closeOnce.Do(func() {
-		s.closed.Store(true)
-		s.cancel()
-
-		close(s.admitPeerCh)
-
-		s.log.Debug("stopped")
-	})
 }
 
 func (s *Swarm) Size() int {
@@ -211,9 +210,7 @@ func (s *Swarm) RemovePeer(addr netip.AddrPort) {
 	delete(s.peers, addr)
 	s.peerMu.Unlock()
 
-	if peer != nil {
-		peer.Stop()
-	}
+	peer.Close()
 	s.stats.TotalPeers.Add(^uint32(0))
 }
 
@@ -280,10 +277,6 @@ func (s *Swarm) admitPeersLoop(ctx context.Context) error {
 						"addr", addr,
 						"error", err.Error(),
 					)
-					return
-				}
-
-				if p == nil {
 					return
 				}
 

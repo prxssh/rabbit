@@ -1,4 +1,4 @@
-package torrent
+package meta
 
 import (
 	"bytes"
@@ -82,7 +82,7 @@ func TestParseMetainfo_SingleFile_OK(t *testing.T) {
 		t.Fatalf("marshal info: %v", err)
 	}
 	wantHash := sha1.Sum(hashed)
-	if mi.Info.Hash != wantHash {
+	if mi.InfoHash != wantHash {
 		t.Fatalf("info hash mismatch")
 	}
 }
@@ -390,8 +390,8 @@ func TestSize(t *testing.T) {
 	}
 
 	// Invalid (neither)
-	if got := (&Metainfo{Info: &Info{}}).Size(); got != -1 {
-		t.Fatalf("invalid total = %d, want -1", got)
+	if got := (&Metainfo{Info: &Info{}}).Size(); got != 0 {
+		t.Fatalf("invalid total = %d, want 0", got)
 	}
 }
 

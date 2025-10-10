@@ -83,6 +83,112 @@ export namespace config {
 
 }
 
+export namespace meta {
+	
+	export class File {
+	    length: number;
+	    path: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new File(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.length = source["length"];
+	        this.path = source["path"];
+	    }
+	}
+	export class Info {
+	    name: string;
+	    pieceLength: number;
+	    pieces: number[][];
+	    private: boolean;
+	    length: number;
+	    files: File[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Info(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.pieceLength = source["pieceLength"];
+	        this.pieces = source["pieces"];
+	        this.private = source["private"];
+	        this.length = source["length"];
+	        this.files = this.convertValues(source["files"], File);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Metainfo {
+	    info?: Info;
+	    announce: string;
+	    announceList: string[][];
+	    // Go type: time
+	    creationDate: any;
+	    createdBy: string;
+	    comment: string;
+	    encoding: string;
+	    urls: string[];
+	    hash: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Metainfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.info = this.convertValues(source["info"], Info);
+	        this.announce = source["announce"];
+	        this.announceList = source["announceList"];
+	        this.creationDate = this.convertValues(source["creationDate"], null);
+	        this.createdBy = source["createdBy"];
+	        this.comment = source["comment"];
+	        this.encoding = source["encoding"];
+	        this.urls = source["urls"];
+	        this.hash = source["hash"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace peer {
 	
 	export class PeerMetrics {
@@ -147,107 +253,6 @@ export namespace peer {
 
 export namespace torrent {
 	
-	export class File {
-	    length: number;
-	    path: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new File(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.length = source["length"];
-	        this.path = source["path"];
-	    }
-	}
-	export class Info {
-	    hash: number[];
-	    name: string;
-	    pieceLength: number;
-	    pieces: number[][];
-	    private: boolean;
-	    length: number;
-	    files: File[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Info(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.hash = source["hash"];
-	        this.name = source["name"];
-	        this.pieceLength = source["pieceLength"];
-	        this.pieces = source["pieces"];
-	        this.private = source["private"];
-	        this.length = source["length"];
-	        this.files = this.convertValues(source["files"], File);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class Metainfo {
-	    info?: Info;
-	    announce: string;
-	    announceList: string[][];
-	    // Go type: time
-	    creationDate: any;
-	    createdBy: string;
-	    comment: string;
-	    encoding: string;
-	    urls: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Metainfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.info = this.convertValues(source["info"], Info);
-	        this.announce = source["announce"];
-	        this.announceList = source["announceList"];
-	        this.creationDate = this.convertValues(source["creationDate"], null);
-	        this.createdBy = source["createdBy"];
-	        this.comment = source["comment"];
-	        this.encoding = source["encoding"];
-	        this.urls = source["urls"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	export class Stats {
 	    totalPeers: number;
 	    connectingPeers: number;
@@ -324,7 +329,7 @@ export namespace torrent {
 	}
 	export class Torrent {
 	    size: number;
-	    metainfo?: Metainfo;
+	    metainfo?: meta.Metainfo;
 	
 	    static createFrom(source: any = {}) {
 	        return new Torrent(source);
@@ -333,7 +338,7 @@ export namespace torrent {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.size = source["size"];
-	        this.metainfo = this.convertValues(source["metainfo"], Metainfo);
+	        this.metainfo = this.convertValues(source["metainfo"], meta.Metainfo);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
