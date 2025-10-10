@@ -32,6 +32,7 @@ func main() {
 		Width:            1024,
 		Height:           768,
 		Fullscreen:       true,
+		DisableResize:    true,
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup:        func(ctx context.Context) { client.Startup(ctx) },
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
