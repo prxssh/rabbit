@@ -57,6 +57,7 @@ func NewTorrent(data []byte) (*Torrent, error) {
 		return nil, err
 	}
 	torrent.tracker = tracker
+	peerManager.RegisterRefillPeerHook(tracker.RefillPeers)
 
 	return torrent, nil
 }

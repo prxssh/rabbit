@@ -100,6 +100,7 @@ type Tracker struct {
 	trackers          map[string]TrackerProtocol
 	log               *slog.Logger
 	stats             *Stats
+	reannounceNow     chan struct{}
 	onAnnounceStart   func() *AnnounceParams
 	onAnnounceSuccess func(addrs []netip.AddrPort)
 }
@@ -141,6 +142,7 @@ func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*T
 		log:               log,
 		tiers:             tiers,
 		stats:             &Stats{},
+		reannounceNow:     make(chan struct{}, 1),
 		onAnnounceStart:   opts.OnAnnounceStart,
 		onAnnounceSuccess: opts.OnAnnounceSuccess,
 		trackers:          make(map[string]TrackerProtocol),
@@ -177,6 +179,14 @@ func (t *Tracker) Stats() TrackerMetrics {
 		CurrentLeechers:     s.CurrentLeechers.Load(),
 		LastAnnounce:        lastAnnT,
 		LastSuccess:         lastSucT,
+	}
+}
+
+func (t *Tracker) RefillPeers() {
+	select {
+	case t.reannounceNow <- struct{}{}:
+	default:
+		t.log.Warn("reannounce queue filled; skipping")
 	}
 }
 
@@ -240,6 +250,26 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
+	runOnce := func() error {
+		if consecutiveFailures >= maxConsecutiveFailures {
+			return errors.New("failed announce; exhausted all attempts")
+		}
+
+		resp, err := t.Announce(ctx, t.onAnnounceStart())
+		if err != nil {
+			consecutiveFailures++
+			backoff := calculateBackoff(consecutiveFailures, maxBackoffShift)
+			ticker.Reset(backoff)
+			return err
+		}
+
+		consecutiveFailures = 0
+		t.onAnnounceSuccess(resp.Peers)
+		ticker.Reset(getNextAnnounceInterval(resp))
+
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -254,22 +284,14 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 			return nil
 
 		case <-ticker.C:
-			if consecutiveFailures >= maxConsecutiveFailures {
-				return errors.New("failed announce; exhausted all attempts")
+			if err := runOnce(); err != nil {
+				return err
 			}
 
-			resp, err := t.Announce(ctx, t.onAnnounceStart())
-			if err != nil {
-				consecutiveFailures++
-				backoff := calculateBackoff(consecutiveFailures, maxBackoffShift)
-				ticker.Reset(backoff)
-				continue
+		case <-t.reannounceNow:
+			if err := runOnce(); err != nil {
+				return err
 			}
-
-			t.onAnnounceSuccess(resp.Peers)
-
-			consecutiveFailures = 0
-			ticker.Reset(getNextAnnounceInterval(resp))
 		}
 	}
 }
