@@ -1,29 +1,27 @@
 <script lang="ts">
-  import type {torrent} from '../../wailsjs/go/models'
+  export let stats: any | undefined
 
-  export let tracker: torrent.TrackerMetrics | undefined
-
-  $: announceSuccessRate = tracker && tracker.totalAnnounces > 0
-    ? ((tracker.successfulAnnounces / tracker.totalAnnounces) * 100).toFixed(2) + '%'
+  $: announceSuccessRate = stats && stats.totalAnnounces > 0
+    ? ((stats.successfulAnnounces / stats.totalAnnounces) * 100).toFixed(2) + '%'
     : 'N/A'
 
-  $: stats = tracker ? [
-    { label: 'Total Announces', value: tracker.totalAnnounces.toString() },
-    { label: 'Successful Announces', value: tracker.successfulAnnounces.toString() },
-    { label: 'Failed Announces', value: tracker.failedAnnounces.toString() },
+  $: items = stats ? [
+    { label: 'Total Announces', value: String(stats.totalAnnounces ?? 0) },
+    { label: 'Successful Announces', value: String(stats.successfulAnnounces ?? 0) },
+    { label: 'Failed Announces', value: String(stats.failedAnnounces ?? 0) },
     { label: 'Success Rate', value: announceSuccessRate },
-    { label: 'Total Peers Received', value: tracker.totalPeersReceived.toString() },
-    { label: 'Current Seeders', value: tracker.currentSeeders.toString() },
-    { label: 'Current Leechers', value: tracker.currentLeechers.toString() },
-    { label: 'Last Announce', value: tracker.lastAnnounce || 'Never' },
-    { label: 'Last Success', value: tracker.lastSuccess || 'Never' }
+    { label: 'Total Peers Received', value: String(stats.totalPeersReceived ?? 0) },
+    { label: 'Current Seeders', value: String(stats.currentSeeders ?? 0) },
+    { label: 'Current Leechers', value: String(stats.currentLeechers ?? 0) },
+    { label: 'Last Announce', value: stats.lastAnnounce || 'Never' },
+    { label: 'Last Success', value: stats.lastSuccess || 'Never' }
   ] : []
 </script>
 
 <div class="tracker-stats">
-  {#if tracker}
+  {#if stats}
     <div class="stats-grid">
-      {#each stats as stat}
+      {#each items as stat}
         <div class="stat-card">
           <div class="stat-label">{stat.label}</div>
           <div class="stat-value">{stat.value}</div>

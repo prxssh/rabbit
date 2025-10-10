@@ -292,52 +292,81 @@ export namespace torrent {
 	    }
 	}
 
-	export class Stats {
-	    downloaded: number;
-	    uploaded: number;
-	    downloadRate: number;
-	    uploadRate: number;
-	    progress: number;
-	    peers: peer.PeerMetrics[];
-	    pieceStates: number[];
-	    swarm: SwarmMetrics;
-	    tracker: TrackerMetrics;
+export class Stats {
+    // flattened swarm metrics
+    totalPeers: number;
+    connectingPeers: number;
+    failedConnection: number;
+    unchokedPeers: number;
+    interestedPeers: number;
+    uploadingTo: number;
+    downloadingFrom: number;
+    totalDownloaded: number;
+    totalUploaded: number;
+    downloadRate: number;
+    uploadRate: number;
+    // flattened tracker metrics
+    totalAnnounces: number;
+    successfulAnnounces: number;
+    failedAnnounces: number;
+    totalPeersReceived: number;
+    currentSeeders: number;
+    currentLeechers: number;
+    lastAnnounce: string;
+    lastSuccess: string;
+    // extra fields
+    progress: number;
+    peers: peer.PeerMetrics[];
+    pieceStates: number[];
 
-	    static createFrom(source: any = {}) {
-	        return new Stats(source);
-	    }
+    static createFrom(source: any = {}) {
+        return new Stats(source);
+    }
 
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.downloaded = source["downloaded"];
-	        this.uploaded = source["uploaded"];
-	        this.downloadRate = source["downloadRate"];
-	        this.uploadRate = source["uploadRate"];
-	        this.progress = source["progress"];
-	        this.peers = this.convertValues(source["peers"], peer.PeerMetrics);
-	        this.pieceStates = source["pieceStates"];
-	        this.swarm = this.convertValues(source["swarm"], SwarmMetrics);
-	        this.tracker = this.convertValues(source["tracker"], TrackerMetrics);
-	    }
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.totalPeers = source["totalPeers"];
+        this.connectingPeers = source["connectingPeers"];
+        this.failedConnection = source["failedConnection"];
+        this.unchokedPeers = source["unchokedPeers"];
+        this.interestedPeers = source["interestedPeers"];
+        this.uploadingTo = source["uploadingTo"];
+        this.downloadingFrom = source["downloadingFrom"];
+        this.totalDownloaded = source["totalDownloaded"];
+        this.totalUploaded = source["totalUploaded"];
+        this.downloadRate = source["downloadRate"];
+        this.uploadRate = source["uploadRate"];
+        this.totalAnnounces = source["totalAnnounces"];
+        this.successfulAnnounces = source["successfulAnnounces"];
+        this.failedAnnounces = source["failedAnnounces"];
+        this.totalPeersReceived = source["totalPeersReceived"];
+        this.currentSeeders = source["currentSeeders"];
+        this.currentLeechers = source["currentLeechers"];
+        this.lastAnnounce = source["lastAnnounce"];
+        this.lastSuccess = source["lastSuccess"];
+        this.progress = source["progress"];
+        this.peers = this.convertValues(source["peers"], peer.PeerMetrics);
+        this.pieceStates = source["pieceStates"];
+    }
 
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
+    	convertValues(a: any, classs: any, asMap: boolean = false): any {
+    	    if (!a) {
+    	        return a;
+    	    }
+    	    if (a.slice && a.map) {
+    	        return (a as any[]).map(elem => this.convertValues(elem, classs));
+    	    } else if ("object" === typeof a) {
+    	        if (asMap) {
+    	            for (const key of Object.keys(a)) {
+    	                a[key] = new classs(a[key]);
+    	            }
+    	            return a;
+    	        }
+    	        return new classs(a);
+    	    }
+    	    return a;
+    	}
+}
 	export class Torrent {
 	    size: number;
 	    clientId: number[];
@@ -374,4 +403,3 @@ export namespace torrent {
 	}
 
 }
-

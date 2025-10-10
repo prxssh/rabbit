@@ -1,9 +1,9 @@
 <script lang="ts">
   import type {peer} from '../../wailsjs/go/models'
   import Badge from './ui/Badge.svelte'
-  import { formatBytes, formatBytesPerSec, formatDuration } from '../lib/utils'
+  import { formatBytes, formatBytesPerSec } from '../lib/utils'
 
-  export let peers: peer.PeerStats[]
+  export let peers: peer.PeerMetrics[]
 
   // Sort peers by connection time (descending - longest connected first)
   $: sortedPeers = [...peers].sort((a, b) => b.ConnectedFor - a.ConnectedFor)
@@ -22,7 +22,6 @@
           <th>Uploaded</th>
           <th>Down Rate</th>
           <th>Up Rate</th>
-          <th>Connected</th>
         </tr>
       </thead>
       <tbody>
@@ -45,7 +44,6 @@
             <td>{formatBytes(peer.Uploaded)}</td>
             <td>{formatBytesPerSec(peer.DownloadRate)}</td>
             <td>{formatBytesPerSec(peer.UploadRate)}</td>
-            <td>{formatDuration(peer.ConnectedFor)}</td>
           </tr>
         {/each}
       </tbody>

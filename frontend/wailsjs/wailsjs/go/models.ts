@@ -83,6 +83,68 @@ export namespace config {
 
 }
 
+export namespace peer {
+	
+	export class PeerMetrics {
+	    // Go type: netip
+	    Addr: any;
+	    Downloaded: number;
+	    Uploaded: number;
+	    RequestsSent: number;
+	    BlocksReceived: number;
+	    BlocksFailed: number;
+	    // Go type: time
+	    LastActive: any;
+	    // Go type: time
+	    ConnectedAt: any;
+	    ConnectedFor: number;
+	    DownloadRate: number;
+	    UploadRate: number;
+	    IsChoked: boolean;
+	    IsInterested: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PeerMetrics(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Addr = this.convertValues(source["Addr"], null);
+	        this.Downloaded = source["Downloaded"];
+	        this.Uploaded = source["Uploaded"];
+	        this.RequestsSent = source["RequestsSent"];
+	        this.BlocksReceived = source["BlocksReceived"];
+	        this.BlocksFailed = source["BlocksFailed"];
+	        this.LastActive = this.convertValues(source["LastActive"], null);
+	        this.ConnectedAt = this.convertValues(source["ConnectedAt"], null);
+	        this.ConnectedFor = source["ConnectedFor"];
+	        this.DownloadRate = source["DownloadRate"];
+	        this.UploadRate = source["UploadRate"];
+	        this.IsChoked = source["IsChoked"];
+	        this.IsInterested = source["IsInterested"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace torrent {
 	
 	export class File {
@@ -186,33 +248,7 @@ export namespace torrent {
 		    return a;
 		}
 	}
-	export class TrackerMetrics {
-	    totalAnnounces: number;
-	    successfulAnnounces: number;
-	    failedAnnounces: number;
-	    totalPeersReceived: number;
-	    currentSeeders: number;
-	    currentLeechers: number;
-	    lastAnnounce: string;
-	    lastSuccess: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new TrackerMetrics(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.totalAnnounces = source["totalAnnounces"];
-	        this.successfulAnnounces = source["successfulAnnounces"];
-	        this.failedAnnounces = source["failedAnnounces"];
-	        this.totalPeersReceived = source["totalPeersReceived"];
-	        this.currentSeeders = source["currentSeeders"];
-	        this.currentLeechers = source["currentLeechers"];
-	        this.lastAnnounce = source["lastAnnounce"];
-	        this.lastSuccess = source["lastSuccess"];
-	    }
-	}
-	export class SwarmMetrics {
+	export class Stats {
 	    totalPeers: number;
 	    connectingPeers: number;
 	    failedConnection: number;
@@ -224,9 +260,22 @@ export namespace torrent {
 	    totalUploaded: number;
 	    downloadRate: number;
 	    uploadRate: number;
+	    totalAnnounces: number;
+	    successfulAnnounces: number;
+	    failedAnnounces: number;
+	    totalPeersReceived: number;
+	    currentSeeders: number;
+	    currentLeechers: number;
+	    // Go type: time
+	    lastAnnounce: any;
+	    // Go type: time
+	    lastSuccess: any;
+	    progress: number;
+	    peers: peer.PeerMetrics[];
+	    pieceStates: number[];
 	
 	    static createFrom(source: any = {}) {
-	        return new SwarmMetrics(source);
+	        return new Stats(source);
 	    }
 	
 	    constructor(source: any = {}) {
@@ -242,32 +291,17 @@ export namespace torrent {
 	        this.totalUploaded = source["totalUploaded"];
 	        this.downloadRate = source["downloadRate"];
 	        this.uploadRate = source["uploadRate"];
-	    }
-	}
-	export class Stats {
-	    downloaded: number;
-	    uploaded: number;
-	    downloadRate: number;
-	    uploadRate: number;
-	    progress: number;
-	    pieceStates: number[];
-	    swarm: SwarmMetrics;
-	    tracker: TrackerMetrics;
-	
-	    static createFrom(source: any = {}) {
-	        return new Stats(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.downloaded = source["downloaded"];
-	        this.uploaded = source["uploaded"];
-	        this.downloadRate = source["downloadRate"];
-	        this.uploadRate = source["uploadRate"];
+	        this.totalAnnounces = source["totalAnnounces"];
+	        this.successfulAnnounces = source["successfulAnnounces"];
+	        this.failedAnnounces = source["failedAnnounces"];
+	        this.totalPeersReceived = source["totalPeersReceived"];
+	        this.currentSeeders = source["currentSeeders"];
+	        this.currentLeechers = source["currentLeechers"];
+	        this.lastAnnounce = this.convertValues(source["lastAnnounce"], null);
+	        this.lastSuccess = this.convertValues(source["lastSuccess"], null);
 	        this.progress = source["progress"];
+	        this.peers = this.convertValues(source["peers"], peer.PeerMetrics);
 	        this.pieceStates = source["pieceStates"];
-	        this.swarm = this.convertValues(source["swarm"], SwarmMetrics);
-	        this.tracker = this.convertValues(source["tracker"], TrackerMetrics);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -288,7 +322,6 @@ export namespace torrent {
 		    return a;
 		}
 	}
-	
 	export class Torrent {
 	    size: number;
 	    metainfo?: Metainfo;

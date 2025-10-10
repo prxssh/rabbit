@@ -13,6 +13,8 @@
     "email": "hello@prxssh.com"
   },
   "info": {
+      "bundleid": "com.prxssh.rabbit",
+      "productversion": "1.0.1",
       "icon": "../../frontend/src/assets/images/rabbit-icon.png"
   }
 }

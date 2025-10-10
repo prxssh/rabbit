@@ -10,10 +10,9 @@
   import { formatBytes, formatHash } from '../lib/utils'
 
   export let torrentData: torrent.Torrent | undefined
-  export let peers: peer.PeerStats[]
+  export let peers: peer.PeerMetrics[]
   export let pieceStates: number[] = []
-  export let swarmStats: torrent.SwarmMetrics | undefined = undefined
-  export let trackerStats: torrent.TrackerMetrics | undefined = undefined
+  export let stats: any | undefined = undefined
 
   let activeTab: 'details' | 'peers' = 'details'
 
@@ -54,11 +53,9 @@
 
         {#if meta.announceList && meta.announceList.length > 0}
           <Section title="Trackers">
-            {#if trackerStats}
-              <div class="tracker-details">
-                <TrackerStats tracker={trackerStats} />
-              </div>
-            {/if}
+            <div class="tracker-details">
+              <TrackerStats {stats} />
+            </div>
             <div class="tracker-grid">
               {#each meta.announceList as tier, i}
                 {#if tier && tier.length > 0}
@@ -74,11 +71,9 @@
           </Section>
         {:else if meta.announce}
           <Section title="Tracker">
-            {#if trackerStats}
-              <div class="tracker-details">
-                <TrackerStats tracker={trackerStats} />
-              </div>
-            {/if}
+            <div class="tracker-details">
+              <TrackerStats {stats} />
+            </div>
             <div class="tracker-single">{meta.announce}</div>
           </Section>
         {/if}
@@ -97,7 +92,7 @@
         {/if}
       {:else if activeTab === 'peers'}
         <Section title="Swarm Statistics">
-          <SwarmStats swarm={swarmStats} />
+          <SwarmStats {stats} />
         </Section>
 
         <Section title="Pieces">

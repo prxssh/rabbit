@@ -101,6 +101,24 @@ type PeerStats struct {
 	DisconnectedAt time.Time
 }
 
+// PeerMetrics is a snapshot of a single peer's connection + transfer stats.
+// Exported for binding to the frontend via Wails.
+type PeerMetrics struct {
+	Addr           netip.AddrPort
+	Downloaded     uint64
+	Uploaded       uint64
+	RequestsSent   uint64
+	BlocksReceived uint64
+	BlocksFailed   uint64
+	LastActive     time.Time
+	ConnectedAt    time.Time
+	ConnectedFor   int64 // duration in nanoseconds
+	DownloadRate   uint64
+	UploadRate     uint64
+	IsChoked       bool
+	IsInterested   bool
+}
+
 type PeerOpts struct {
 	Log        *slog.Logger
 	PieceCount int
@@ -524,5 +542,29 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 
 	default:
 		// unknown ID; nothing to do
+	}
+}
+
+// Stats returns a snapshot of metrics for this peer.
+func (p *Peer) Stats() PeerMetrics {
+	lastNs := p.lastAcitivyAt.Load()
+	lastActive := time.Unix(0, lastNs)
+	connectedAt := p.stats.ConnectedAt
+	connectedFor := time.Since(connectedAt).Nanoseconds()
+
+	return PeerMetrics{
+		Addr:           p.addr,
+		Downloaded:     p.stats.Downloaded.Load(),
+		Uploaded:       p.stats.Uploaded.Load(),
+		RequestsSent:   p.stats.RequestsSent.Load(),
+		BlocksReceived: p.stats.PiecesReceived.Load(),
+		BlocksFailed:   p.stats.RequestsTimeout.Load(),
+		LastActive:     lastActive,
+		ConnectedAt:    connectedAt,
+		ConnectedFor:   connectedFor,
+		DownloadRate:   p.stats.DownloadRate.Load(),
+		UploadRate:     p.stats.UploadRate.Load(),
+		IsChoked:       p.PeerChoking(),
+		IsInterested:   p.AmInterested(),
 	}
 }
