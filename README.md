@@ -1,7 +1,8 @@
 # Rabbit
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/046a1b51-4a29-415f-ab8d-6d249c104983" alt="Rabbit Demo" width="800"/>
+  <video src="https://github.com/user-attachments/assets/046a1b51-4a29-415f-ab8d-6d249c104983" controls autoplay loop muted width="800">
+  </video>
 </p>
 
 A cross platform BitTorrent client & search engine built with Go and Wails
