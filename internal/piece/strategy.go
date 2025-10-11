@@ -19,15 +19,13 @@ func (pk *Picker) NextForPeer(peer *PeerView, n int) []*Request {
 	}
 
 	n = min(n, capacity)
-	var pieceSelectionStrategy func(netip.AddrPort, bitfield.Bitfield, int) []*Request
 
-	switch config.Load().PieceDownloadStrategy {
-	case config.PieceDownloadStrategySequential:
-		pieceSelectionStrategy = pk.selectSequential
-	case config.PieceDownloadStrategyRandom:
-		pieceSelectionStrategy = pk.selectRandom
-	default:
-		pieceSelectionStrategy = pk.selectRarestFirst
+	pk.mu.RLock()
+	endgame := pk.endgame
+	pk.mu.RUnlock()
+
+	if endgame {
+		return pk.selectEndgameBlocks(peer, n)
 	}
 
 	reqs := make([]*Request, 0, n)
@@ -54,10 +52,59 @@ func (pk *Picker) NextForPeer(peer *PeerView, n int) []*Request {
 		pk.mu.Unlock()
 	}
 
-	if count < n {
-		remaining := n - count
-		strategyRequests := pieceSelectionStrategy(peer.Addr, peer.Bitfield, remaining)
-		reqs = append(reqs, strategyRequests...)
+	if count == n {
+		return reqs
+	}
+
+	var pieceSelectionStrategy func(netip.AddrPort, bitfield.Bitfield, int) []*Request
+
+	switch config.Load().PieceDownloadStrategy {
+	case config.PieceDownloadStrategySequential:
+		pieceSelectionStrategy = pk.selectSequential
+	case config.PieceDownloadStrategyRandom:
+		pieceSelectionStrategy = pk.selectRandom
+	default:
+		pieceSelectionStrategy = pk.selectRarestFirst
+	}
+
+	remaining := n - count
+	strategyRequests := pieceSelectionStrategy(peer.Addr, peer.Bitfield, remaining)
+	reqs = append(reqs, strategyRequests...)
+	return reqs
+}
+
+func (pk *Picker) selectEndgameBlocks(peer *PeerView, n int) []*Request {
+	if !peer.Unchoked || n <= 0 {
+		return nil
+	}
+
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
+
+	reqs := make([]*Request, n, 0)
+
+	for _, p := range pk.pieces {
+		if len(reqs) >= n {
+			break
+		}
+
+		if p.verified || !peer.Bitfield.Has(p.index) {
+			continue
+		}
+
+		for bi, blk := range p.blocks {
+			if len(reqs) >= n {
+				break
+			}
+
+			if blk.status == blockInflight {
+				if blk.owner != nil && blk.owner.addr == peer.Addr {
+					continue
+				}
+
+				reqs = append(reqs, pk.createRequest(peer.Addr, p, bi))
+			}
+		}
 	}
 
 	return reqs
