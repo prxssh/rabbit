@@ -1,0 +1,183 @@
+package piece
+
+import (
+	"math/rand/v2"
+	"net/netip"
+
+	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/utils/bitfield"
+)
+
+func (pk *Picker) NextForPeer(peer *PeerView, n int) []*Request {
+	if !peer.Unchoked || n <= 0 {
+		return nil
+	}
+
+	capacity := pk.peerCapacity(peer.Addr)
+	if capacity == 0 {
+		return nil
+	}
+
+	n = min(n, capacity)
+	var pieceSelectionStrategy func(netip.AddrPort, bitfield.Bitfield, int) []*Request
+
+	switch config.Load().PieceDownloadStrategy {
+	case config.PieceDownloadStrategySequential:
+		pieceSelectionStrategy = pk.selectSequential
+	case config.PieceDownloadStrategyRandom:
+		pieceSelectionStrategy = pk.selectRandom
+	default:
+		pieceSelectionStrategy = pk.selectRarestFirst
+	}
+
+	reqs := make([]*Request, 0, n)
+	count := 0
+
+	for i := 0; i < pk.PieceCount && count < n; i++ {
+		pk.mu.RLock()
+		piece := pk.pieces[i]
+		if piece.verified || piece.doneBlocks == 0 || !peer.Bitfield.Has(i) {
+			pk.mu.RUnlock()
+			continue
+		}
+		pk.mu.RUnlock()
+
+		for count < n {
+			block, ok := pk.findAvailableBlock(piece, peer.Addr)
+			if !ok {
+				break
+			}
+
+			reqs = append(reqs, pk.createRequest(peer.Addr, piece, block))
+			count++
+		}
+	}
+
+	if len(reqs) < n {
+		remaining := n - len(reqs)
+		strategyRequests := pieceSelectionStrategy(peer.Addr, peer.Bitfield, remaining)
+		reqs = append(reqs, strategyRequests...)
+	}
+
+	return reqs
+}
+
+func (pk *Picker) selectSequential(
+	peer netip.AddrPort,
+	peerBF bitfield.Bitfield,
+	n int,
+) []*Request {
+	reqs := make([]*Request, 0, n)
+
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
+
+	for pk.nextPiece < pk.PieceCount && pk.pieces[pk.nextPiece].verified {
+		pk.nextPiece++
+		pk.nextBlock = 0
+	}
+	if pk.nextPiece >= pk.PieceCount {
+		return reqs
+	}
+
+	if !peerBF.Has(pk.nextPiece) {
+		return reqs
+	}
+
+	p := pk.pieces[pk.nextPiece]
+	for bi := pk.nextBlock; bi < p.blockCount && len(reqs) < n; bi++ {
+		if p.blocks[bi].status != blockWant {
+			continue
+		}
+
+		reqs = append(reqs, pk.createRequest(peer, p, bi))
+		pk.nextBlock = bi + 1
+	}
+
+	return reqs
+}
+
+func (pk *Picker) selectRandom(peer netip.AddrPort, peerBF bitfield.Bitfield, n int) []*Request {
+	available := make([]int, 0, pk.PieceCount)
+
+	pk.mu.RLock()
+	for i := 0; i < pk.PieceCount; i++ {
+		if pk.isValidPiece(i) && peerBF.Has(i) {
+			available = append(available, i)
+		}
+	}
+	pk.mu.RUnlock()
+
+	if len(available) == 0 {
+		return nil
+	}
+
+	lenAvailable := len(available)
+	n = min(n, lenAvailable)
+
+	for i := 0; i < n; i++ {
+		j := i + rand.IntN(lenAvailable-i)
+		available[i], available[j] = available[j], available[i]
+	}
+
+	reqs := make([]*Request, 0, n)
+
+	for i := 0; i < n; i++ {
+		piece := available[i]
+
+		pk.mu.Lock()
+		p := pk.pieces[piece]
+		pk.mu.RUnlock()
+
+		if block, ok := pk.findAvailableBlock(p, peer); ok {
+			reqs = append(reqs, pk.createRequest(peer, p, block))
+		}
+	}
+
+	return reqs
+}
+
+func (pk *Picker) selectRarestFirst(
+	peer netip.AddrPort,
+	peerBF bitfield.Bitfield,
+	n int,
+) []*Request {
+	rarestAvail, ok := pk.availability.FirstNonEmpty()
+	if !ok {
+		return nil
+	}
+
+	reqs := make([]*Request, 0, n)
+
+	for a := rarestAvail; a <= pk.availability.maxAvail && len(reqs) < n; a++ {
+		bucket := pk.availability.Bucket(a)
+		if len(bucket) == 0 {
+			continue
+		}
+
+		for _, piece := range bucket {
+			if len(reqs) >= n {
+				break
+			}
+
+			if !pk.isValidPiece(piece) || !peerBF.Has(piece) {
+				continue
+			}
+
+			pk.mu.Lock()
+			p := pk.pieces[piece]
+			pk.mu.Unlock()
+
+			if block, ok := pk.findAvailableBlock(p, peer); ok {
+				reqs = append(reqs, pk.createRequest(peer, p, block))
+			}
+		}
+	}
+
+	return reqs
+}
+
+func (pk *Picker) createRequest(peer netip.AddrPort, piece *pieceState, block int) *Request {
+	begin, length := pk.setBlockInflight(piece, block, peer)
+	return &Request{Piece: piece.index, Begin: begin, Length: length}
+}
