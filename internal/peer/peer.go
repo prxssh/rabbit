@@ -310,8 +310,6 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 				return nil
 			}
 
-			l.Debug("writing message", "message", message.ID.String())
-
 			if err := p.writeMessage(message); err != nil {
 				l.Warn(
 					"failed to write message, exiting loop",
