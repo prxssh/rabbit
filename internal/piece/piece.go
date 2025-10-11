@@ -17,15 +17,15 @@ const (
 	blockDone
 )
 
-type ownerMeta struct {
-	sentAt  time.Time
-	retries uint8
+type blockOwner struct {
+	addr        netip.AddrPort
+	requestedAt time.Time
 }
 
 type block struct {
 	pendingRequests int
 	status          blockStatus
-	owners          map[netip.AddrPort]*ownerMeta
+	owner           *blockOwner
 }
 
 // pieceState describes one piece’s static metadata and dynamic progress.

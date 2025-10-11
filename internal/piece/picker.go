@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/utils/bitfield"
@@ -87,10 +88,7 @@ func NewPicker(size int64, pieceLength int32, pieceHashes [][sha1.Size]byte) *Pi
 		blocks := make([]*block, blockCount)
 
 		for j := 0; j < blockCount; j++ {
-			blocks[j] = &block{
-				status: blockWant,
-				owners: make(map[netip.AddrPort]*ownerMeta),
-			}
+			blocks[j] = &block{status: blockWant}
 		}
 
 		pieces[i] = &pieceState{
@@ -183,14 +181,42 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort) {
 	pk.cleanupPeerState(peer)
 }
 
-func (pk *Picker) OnTimeout(peer netip.AddrPort, piece, begin int) {
-	pk.unassignBlockFromPeer(peer, piece, begin)
-
+func (pk *Picker) CheckTimeouts(timeout time.Duration) []*Request {
 	pk.mu.Lock()
-	ps := pk.pieces[piece]
-	blockIdx := BlockIndexForBegin(begin, int(ps.length), BlockLength)
-	pk.resetBlockToWant(piece, blockIdx)
-	pk.mu.Unlock()
+	defer pk.mu.Unlock()
+
+	var timeouts []*Request
+	now := time.Now()
+
+	for _, p := range pk.pieces {
+		if p.verified {
+			continue
+		}
+
+		for bi, blk := range p.blocks {
+			if blk.status != blockInflight || blk.owner == nil ||
+				blk.owner.requestedAt.IsZero() {
+				continue
+			}
+
+			if now.Sub(blk.owner.requestedAt) <= timeout {
+				continue
+			}
+
+			begin, length := getBlockInfo(p, bi)
+			timeouts = append(
+				timeouts,
+				&Request{Piece: p.index, Begin: begin, Length: length},
+			)
+
+			pk.unassignBlockFromPeer(blk.owner.addr, p.index, begin)
+			blk.owner = nil
+			blk.status = blockWant
+			pk.inflightRequests--
+		}
+	}
+
+	return timeouts
 }
 
 func (pk *Picker) OnBlockReceived(peer netip.AddrPort, piece, begin int) {
@@ -219,6 +245,10 @@ func (pk *Picker) OnBlockReceived(peer netip.AddrPort, piece, begin int) {
 		if pk.remainingBlocks > 0 {
 			pk.remainingBlocks--
 		}
+	}
+
+	if pk.remainingBlocks <= config.Load().EndgameThreshold {
+		pk.endgame = true
 	}
 }
 
@@ -339,8 +369,10 @@ func (pk *Picker) isValidPiece(piece int) bool {
 
 func (pk *Picker) createRequest(peer netip.AddrPort, p *pieceState, blockIdx int) *Request {
 	begin, length := getBlockInfo(p, blockIdx)
+
 	if p.blocks[blockIdx].status == blockWant {
 		p.blocks[blockIdx].status = blockInflight
+		p.blocks[blockIdx].owner = &blockOwner{addr: peer, requestedAt: time.Now()}
 		pk.inflightRequests++
 	}
 

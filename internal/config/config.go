@@ -128,8 +128,8 @@ type Config struct {
 	// duplicate owners (peers concurrently fetching the same block).
 	EndgameDupPerBlock int
 
-	// EndgameEnabled toggled duplicate requests in endgame.
-	EndgameEnabled bool
+	// EndgameThreshold decides when to enter endgame based on remaining blocks.
+	EndgameThreshold int
 
 	// MaxRequestsPerPiece caps the number of duplicate requests for the
 	// same piece across all peers to prevent over-downloading.
@@ -215,7 +215,7 @@ func defaultConfig() (Config, error) {
 		RequestQueueTime:           3 * time.Second,
 		RequestTimeout:             25 * time.Second,
 		EndgameDupPerBlock:         2,
-		EndgameEnabled:             true,
+		EndgameThreshold:           30,
 		MaxRequestsPerPiece:        128,
 		UploadSlots:                4,
 		RechokeInterval:            10 * time.Second,
