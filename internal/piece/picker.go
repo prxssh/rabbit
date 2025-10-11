@@ -206,7 +206,7 @@ func (pk *Picker) CheckTimeouts() []*Cancel {
 				continue
 			}
 
-			if now.Sub(blk.owner.requestedAt) <= 3*time.Second {
+			if now.Sub(blk.owner.requestedAt) <= 30*time.Second {
 				continue
 			}
 

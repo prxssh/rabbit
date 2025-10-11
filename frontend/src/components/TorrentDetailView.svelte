@@ -9,7 +9,7 @@
 
   $: meta = torrentData?.metainfo
   $: info = meta?.info
-  $: infoHash = info?.hash ? formatHash(info.hash) : ''
+  $: infoHash = meta?.hash ? formatHash(meta.hash) : ''
 </script>
 
 <div class="detail-view">
@@ -32,7 +32,7 @@
 
         <div class="info-card">
           <div class="info-label">Info Hash</div>
-          <div class="info-value hash">{info?.hash ? formatHash(info.hash) : 'N/A'}</div>
+          <div class="info-value hash">{meta?.hash ? formatHash(meta.hash) : 'N/A'}</div>
         </div>
 
         <div class="info-card">
