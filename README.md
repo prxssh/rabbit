@@ -1,9 +1,9 @@
 # Rabbit
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/046a1b51-4a29-415f-ab8d-6d249c104983" controls autoplay loop muted width="800">
-  </video>
+  <img src="https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExdmpudXE5OTJxb2FnMTdzbG82MTFkZGpqNm83aDVsOHRiaGhicXoxcCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/OldiFIXkPmodIOD5nj/giphy.gif" alt="Rabbit Demo" width="800"/>
 </p>
+
 
 A cross platform BitTorrent client & search engine built with Go and Wails
 (Svelte + Typescript).
