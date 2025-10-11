@@ -5,17 +5,20 @@
   import InfoCard from './ui/InfoCard.svelte'
   import TabGroup from './ui/TabGroup.svelte'
   import Section from './ui/Section.svelte'
+  import SwarmStats from './SwarmStats.svelte'
+  import TrackerStats from './TrackerStats.svelte'
   import { formatBytes, formatHash } from '../lib/utils'
 
   export let torrentData: torrent.Torrent | undefined
-  export let peers: peer.PeerStats[]
+  export let peers: peer.PeerMetrics[]
   export let pieceStates: number[] = []
+  export let stats: any | undefined = undefined
 
   let activeTab: 'details' | 'peers' = 'details'
 
   $: meta = torrentData?.metainfo
   $: info = meta?.info
-  $: infoHash = info?.hash ? formatHash(info.hash) : ''
+  $: infoHash = meta?.hash ? formatHash(meta.hash) : ''
   $: totalPieces = info?.pieces?.length || 0
   $: effectivePieceStates = pieceStates.length > 0 ? pieceStates : new Array(totalPieces).fill(0)
 
@@ -27,6 +30,8 @@
   function handleTabChange(tabId: string) {
     activeTab = tabId as 'details' | 'peers'
   }
+
+  // TrackerStats renders its own computed metrics
 </script>
 
 <div class="detail-panel">
@@ -38,7 +43,7 @@
         <Section title="General Information">
           <div class="info-grid">
             <InfoCard label="Name" value={info?.name || 'N/A'} />
-            <InfoCard label="Info Hash" value={info?.hash ? formatHash(info.hash) : 'N/A'} mono />
+            <InfoCard label="Info Hash" value={meta?.hash ? formatHash(meta.hash) : 'N/A'} mono />
             <InfoCard label="Size" value={formatBytes(torrentData?.size || 0)} />
             <InfoCard label="Piece Length" value={info?.pieceLength ? formatBytes(info.pieceLength) : 'N/A'} />
             <InfoCard label="Total Pieces" value={String(info?.pieces?.length || 0)} />
@@ -48,6 +53,9 @@
 
         {#if meta.announceList && meta.announceList.length > 0}
           <Section title="Trackers">
+            <div class="tracker-details">
+              <TrackerStats {stats} />
+            </div>
             <div class="tracker-grid">
               {#each meta.announceList as tier, i}
                 {#if tier && tier.length > 0}
@@ -63,6 +71,9 @@
           </Section>
         {:else if meta.announce}
           <Section title="Tracker">
+            <div class="tracker-details">
+              <TrackerStats {stats} />
+            </div>
             <div class="tracker-single">{meta.announce}</div>
           </Section>
         {/if}
@@ -80,6 +91,10 @@
           </Section>
         {/if}
       {:else if activeTab === 'peers'}
+        <Section title="Swarm Statistics">
+          <SwarmStats {stats} />
+        </Section>
+
         <Section title="Pieces">
           <PiecesHeatmap pieceStates={effectivePieceStates} totalPieces={totalPieces} />
         </Section>
@@ -173,6 +188,14 @@
     word-break: break-all;
   }
 
+  
+
+  
+
+  .tracker-details {
+    margin: 0 0 var(--spacing-3) 0;
+  }
+
   .files-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
@@ -204,6 +227,8 @@
     color: var(--color-text-disabled);
     white-space: nowrap;
   }
+
+  
 
   
 </style>

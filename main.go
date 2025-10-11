@@ -6,8 +6,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/prxssh/rabbit/pkg/torrent"
-	"github.com/prxssh/rabbit/pkg/utils/logging"
+	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/torrent"
+	"github.com/prxssh/rabbit/internal/utils/logging"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -19,13 +20,14 @@ var assets embed.FS
 func main() {
 	setupLogger()
 
-	client, err := torrent.NewClient()
-	if err != nil {
-		slog.Error("client initialization failed", "error", err)
+	if err := config.Init(); err != nil {
+		slog.Error("failed to initialize config", "error", err)
 		os.Exit(1)
 	}
 
-	err = wails.Run(&options.App{
+	client := torrent.NewClient()
+
+	err := wails.Run(&options.App{
 		Title:            "Rabbit - BitTorrent Client & Search Engine",
 		Width:            1024,
 		Height:           768,
@@ -36,14 +38,14 @@ func main() {
 		Bind:             []any{client},
 	})
 	if err != nil {
-		slog.Error("failed to start wails", "error", err)
+		slog.Error("failed to start wails", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
 func setupLogger() {
 	opts := logging.DefaultOptions()
-	opts.SlogOpts.Level = slog.LevelDebug
+	opts.SlogOpts.Level = slog.LevelInfo
 	opts.SlogOpts.AddSource = false
 
 	h := logging.NewPrettyHandler(os.Stdout, &opts)

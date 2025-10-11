@@ -16,8 +16,9 @@
   let uploadStatus = ''
   let torrents: any[] = []
   let selectedTorrentId: number | null = null
-  let peers: peer.PeerStats[] = []
+  let peers: peer.PeerMetrics[] = []
   let pieceStates: number[] = []
+  let selectedStats: any = null
   let statsUpdateInterval: number | null = null
   let showAddDialog = false
   let showSettingsDialog = false
@@ -111,8 +112,8 @@
     let aggUpload = 0
     const updatedTorrents = await Promise.all(
       torrents.map(async (torrent) => {
-        if (torrent.torrentData?.metainfo?.info?.hash) {
-          const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
+        if (torrent.torrentData?.metainfo?.hash) {
+          const infoHash = formatHash(torrent.torrentData.metainfo.hash)
           try {
             const stats = await GetTorrentStats(infoHash)
             if (stats) {
@@ -121,6 +122,7 @@
                 peers = stats.peers || []
                 // Force a new array reference to trigger Svelte reactivity
                 pieceStates = (stats.pieceStates || []).slice()
+                selectedStats = stats
               }
 
               // Track aggregate rates
@@ -210,8 +212,8 @@
 
   async function removeTorrent(id: number) {
     const torrent = torrents.find(t => t.id === id)
-    if (torrent && torrent.torrentData?.metainfo?.info?.hash) {
-      const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
+    if (torrent && torrent.torrentData?.metainfo?.hash) {
+      const infoHash = formatHash(torrent.torrentData.metainfo.hash)
       try {
         await RemoveTorrent(infoHash)
         uploadStatus = 'Torrent removed'
@@ -266,6 +268,7 @@
   $: if (!selectedTorrent) {
     peers = []
     pieceStates = []
+    selectedStats = null
   }
 
   // Start stats update interval when we have torrents
@@ -328,6 +331,7 @@
           torrentData={selectedTorrent.torrentData}
           {peers}
           {pieceStates}
+          stats={selectedStats}
         />
       </div>
     {/if}
