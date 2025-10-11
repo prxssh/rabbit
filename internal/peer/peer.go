@@ -39,6 +39,11 @@ type Peer struct {
 	startOnce     sync.Once
 	stopped       atomic.Bool
 	cancel        context.CancelFunc
+	onBitfield    func(netip.AddrPort, bitfield.Bitfield)
+	onHave        func(netip.AddrPort, int)
+	onDisconnect  func(netip.AddrPort)
+	onHandshake   func(netip.AddrPort)
+	onPiece       func(netip.AddrPort, int, int, []byte)
 }
 
 // PeerStats holds per-connection counters/timestamps. All counters are
@@ -121,9 +126,14 @@ type PeerMetrics struct {
 }
 
 type PeerOpts struct {
-	Log        *slog.Logger
-	PieceCount int
-	InfoHash   [sha1.Size]byte
+	Log          *slog.Logger
+	PieceCount   int
+	InfoHash     [sha1.Size]byte
+	OnBitfield   func(netip.AddrPort, bitfield.Bitfield)
+	OnHave       func(netip.AddrPort, int)
+	OnDisconnect func(netip.AddrPort)
+	OnHandshake  func(netip.AddrPort)
+	OnPiece      func(netip.AddrPort, int, int, []byte)
 }
 
 func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, error) {
@@ -139,14 +149,21 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, e
 		_ = conn.Close()
 		return nil, err
 	}
+	if opts.OnHandshake != nil {
+	}
 
 	p := &Peer{
-		log:      log,
-		conn:     conn,
-		addr:     addr,
-		stats:    &PeerStats{},
-		bitfield: bitfield.New(opts.PieceCount),
-		outbox:   make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
+		log:          log,
+		conn:         conn,
+		addr:         addr,
+		stats:        &PeerStats{},
+		onBitfield:   opts.OnBitfield,
+		onHave:       opts.OnHave,
+		onDisconnect: opts.OnDisconnect,
+		onHandshake:  opts.OnHandshake,
+		onPiece:      opts.OnPiece,
+		bitfield:     bitfield.New(opts.PieceCount),
+		outbox:       make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
 	}
 	p.setState(maskAmChoking|maskPeerChoking, true)
 	p.lastAcitivyAt.Store(time.Now().UnixNano())
@@ -191,6 +208,10 @@ func (p *Peer) Idleness() time.Duration {
 	return time.Since(ns)
 }
 
+func (p *Peer) SendBitfield(bf bitfield.Bitfield) {
+	p.enqueueMessage(protocol.MessageBitfield(bf.Bytes()))
+}
+
 func (p *Peer) SendKeepAlive() {
 	p.enqueueMessage(nil)
 }
@@ -219,12 +240,16 @@ func (p *Peer) SendBitfield(bf *bitfield.Bitfield) {
 	p.enqueueMessage(protocol.MessageBitfield(bf.Bytes()))
 }
 
-func (p *Peer) SendRequest(piece, begin, length uint32) {
+func (p *Peer) SendCancel(piece, begin, length int) {
+	p.enqueueMessage(protocol.MessageCancel(piece, begin, length))
+}
+
+func (p *Peer) SendRequest(piece, begin, length int) {
 	if p.PeerChoking() {
 		return
 	}
 
-	p.enqueueMessage(protocol.MessageRequest(piece, begin, length))
+	p.enqueueMessage(protocol.MessageRequest(uint32(piece), uint32(begin), uint32(length)))
 }
 
 func (p *Peer) SendPiece(piece, begin uint32, block []byte) {
@@ -268,6 +293,8 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 	l := p.log.With("component", "write messages loop")
 	l.Debug("started")
 
+	p.onHandshake(p.addr)
+
 	keepAliveInterval := config.Load().KeepAliveInterval
 	ticker := time.NewTicker(keepAliveInterval)
 	defer ticker.Stop()
@@ -285,7 +312,10 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 			}
 
 			if err := p.writeMessage(message); err != nil {
-				l.Warn("failed to write message, exiting loop", "error", err.Error())
+				l.Warn(
+					"failed to write message, exiting loop",
+					"error", err.Error(),
+				)
 				return err
 			}
 
@@ -438,24 +468,21 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 		p.setState(maskPeerInterested, false)
 	case protocol.MsgBitfield:
 		bf := bitfield.FromBytes(message.Payload)
-		p.bitfieldMu.Lock()
-		p.bitfield = bf
-		p.bitfieldMu.Unlock()
+		p.onBitfield(p.addr, bf)
 	case protocol.MsgHave:
 		piece, ok := message.ParseHave()
 		if !ok {
 			return errors.New("malformed have message")
 		}
+		p.onHave(p.addr, int(piece))
 
-		p.bitfieldMu.Lock()
-		p.bitfield.Set(int(piece))
-		p.bitfieldMu.Unlock()
 	case protocol.MsgPiece:
-		_, _, block, ok := message.ParsePiece()
+		piece, begin, block, ok := message.ParsePiece()
 		if !ok {
 			return errors.New("malformed piece message")
 		}
 
+		p.onPiece(p.addr, int(piece), int(begin), block)
 		p.stats.PiecesReceived.Add(1)
 		p.stats.Downloaded.Add(uint64(len(block)))
 	case protocol.MsgRequest:

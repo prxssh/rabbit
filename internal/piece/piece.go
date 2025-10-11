@@ -69,6 +69,10 @@ type pieceState struct {
 	blocks []*block
 }
 
+func (pk *Picker) PieceLength(piece int) (int32, int32, bool) {
+	return pk.pieces[piece].length, BlockLength, pk.pieces[piece].isLastPiece
+}
+
 func (pk *Picker) PieceHash(idx int) [sha1.Size]byte {
 	pk.mu.RLock()
 	defer pk.mu.RUnlock()
@@ -118,7 +122,7 @@ func (pk *Picker) MarkPieceVerified(idx int, ok bool) {
 		}
 
 		ps.blocks[b].status = blockWant
-		ps.blocks[b].owners = make(map[netip.AddrPort]*ownerMeta)
+		ps.blocks[b].owner = nil
 	}
 	ps.doneBlocks = 0
 }

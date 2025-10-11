@@ -59,7 +59,6 @@ type BlockInfo struct {
 	PieceLength int32 // nominal piece length from metadata
 	BlockLength int32 // block length used by your requester
 	IsLastPiece bool  // whether this is the torrent’s final piece
-	Size        int64 // total torrent length in bytes
 }
 
 // NewStore prepares directories, opens/truncates files, and precomputes stream
@@ -153,7 +152,7 @@ func (s *Store) BufferBlock(data []byte, bi BlockInfo) {
 	if !ok {
 		size := bi.PieceLength
 		if bi.IsLastPiece {
-			size = piece.LastPieceLength(bi.Size, bi.PieceLength)
+			size = piece.LastPieceLength(s.size, bi.PieceLength)
 		}
 
 		buf = &PieceBuffer{data: make([]byte, size), size: size}
