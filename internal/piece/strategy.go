@@ -35,26 +35,27 @@ func (pk *Picker) NextForPeer(peer *PeerView, n int) []*Request {
 
 	for i := 0; i < pk.PieceCount && count < n; i++ {
 		pk.mu.RLock()
-		piece := pk.pieces[i]
-		if piece.verified || piece.doneBlocks == 0 || !peer.Bitfield.Has(i) {
+		p := pk.pieces[i]
+		if p.verified || p.doneBlocks == 0 || !peer.Bitfield.Has(i) {
 			pk.mu.RUnlock()
 			continue
 		}
 		pk.mu.RUnlock()
 
+		pk.mu.Lock()
 		for count < n {
-			block, ok := pk.findAvailableBlock(piece, peer.Addr)
-			if !ok {
+			if block, ok := pk.findAvailableBlock(p, peer.Addr); ok {
+				reqs = append(reqs, pk.createRequest(peer.Addr, p, block))
+				count++
+			} else {
 				break
 			}
-
-			reqs = append(reqs, pk.createRequest(peer.Addr, piece, block))
-			count++
 		}
+		pk.mu.Unlock()
 	}
 
-	if len(reqs) < n {
-		remaining := n - len(reqs)
+	if count < n {
+		remaining := n - count
 		strategyRequests := pieceSelectionStrategy(peer.Addr, peer.Bitfield, remaining)
 		reqs = append(reqs, strategyRequests...)
 	}
@@ -85,8 +86,10 @@ func (pk *Picker) selectSequential(
 	}
 
 	p := pk.pieces[pk.nextPiece]
+
 	for bi := pk.nextBlock; bi < p.blockCount && len(reqs) < n; bi++ {
-		if p.blocks[bi].status != blockWant {
+		if p.blocks[bi].status != blockWant ||
+			pk.isBlockAssignedtoPeer(peer, p.index, bi*BlockLength) {
 			continue
 		}
 
@@ -100,13 +103,13 @@ func (pk *Picker) selectSequential(
 func (pk *Picker) selectRandom(peer netip.AddrPort, peerBF bitfield.Bitfield, n int) []*Request {
 	available := make([]int, 0, pk.PieceCount)
 
-	pk.mu.RLock()
 	for i := 0; i < pk.PieceCount; i++ {
+		pk.mu.RLock()
 		if pk.isValidPiece(i) && peerBF.Has(i) {
 			available = append(available, i)
 		}
+		pk.mu.RUnlock()
 	}
-	pk.mu.RUnlock()
 
 	if len(available) == 0 {
 		return nil
@@ -123,15 +126,12 @@ func (pk *Picker) selectRandom(peer netip.AddrPort, peerBF bitfield.Bitfield, n 
 	reqs := make([]*Request, 0, n)
 
 	for i := 0; i < n; i++ {
-		piece := available[i]
-
 		pk.mu.Lock()
-		p := pk.pieces[piece]
-		pk.mu.RUnlock()
-
+		p := pk.pieces[available[i]]
 		if block, ok := pk.findAvailableBlock(p, peer); ok {
 			reqs = append(reqs, pk.createRequest(peer, p, block))
 		}
+		pk.mu.Unlock()
 	}
 
 	return reqs
@@ -160,24 +160,21 @@ func (pk *Picker) selectRarestFirst(
 				break
 			}
 
+			pk.mu.RLock()
 			if !pk.isValidPiece(piece) || !peerBF.Has(piece) {
+				pk.mu.RUnlock()
 				continue
 			}
+			pk.mu.RUnlock()
 
 			pk.mu.Lock()
 			p := pk.pieces[piece]
-			pk.mu.Unlock()
-
 			if block, ok := pk.findAvailableBlock(p, peer); ok {
 				reqs = append(reqs, pk.createRequest(peer, p, block))
 			}
+			pk.mu.Unlock()
 		}
 	}
 
 	return reqs
-}
-
-func (pk *Picker) createRequest(peer netip.AddrPort, piece *pieceState, block int) *Request {
-	begin, length := pk.setBlockInflight(piece, block, peer)
-	return &Request{Piece: piece.index, Begin: begin, Length: length}
 }

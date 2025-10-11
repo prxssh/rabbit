@@ -123,17 +123,15 @@ func (b *availabilityBucket) Bucket(a int) []int {
 
 // Move changes the availability count for piece i by delta (+1 or -1).
 func (b *availabilityBucket) Move(i, delta int) {
-	b.mu.RLock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	oldA := int(b.avail[i])
 	newA := min(b.maxAvail, max(0, oldA+delta))
-	b.mu.RUnlock()
 
 	if newA == oldA {
 		return
 	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	b.removeFrom(i, oldA)
 	b.addTo(i, newA)
