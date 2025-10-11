@@ -117,12 +117,22 @@ func (t *Torrent) GetStats() *Stats {
 	trackerStats := t.tracker.Stats()
 
 	s := &Stats{
-		Progress:    0.0, // TODO: Calculate based on piece completion
+		Progress:    0.0,
 		Peers:       t.peerManager.PeerMetrics(),
-		PieceStates: []int{}, // TODO: Implement piece state tracking
+		PieceStates: t.peerManager.PieceStates(),
 	}
 	s.SwarmMetrics = swarmStats
 	s.TrackerMetrics = trackerStats
+
+	if total := len(s.PieceStates); total > 0 {
+		completed := 0
+		for _, st := range s.PieceStates {
+			if st == 2 { // Completed
+				completed++
+			}
+		}
+		s.Progress = (float64(completed) / float64(total)) * 100.0
+	}
 	return s
 }
 
