@@ -136,72 +136,101 @@ func (pk *Picker) OnPeerHave(peer netip.AddrPort, piece int) {
 	}
 
 	pk.peerMu.Lock()
-	if peerBF, ok := pk.peerBitfields[peer]; ok {
-		peerBF.Set(piece)
-		pk.peerBitfields[peer] = peerBF
-	}
-	pk.peerMu.Unlock()
+	defer pk.peerMu.Unlock()
 
-	pk.peerMu.RLock()
-	have := pk.bitfield.Has(piece)
-	pk.peerMu.RUnlock()
-	if have {
+	peerBF, ok := pk.peerBitfields[peer]
+	if !ok {
+		peerBF = bitfield.New(pk.PieceCount)
+	}
+	if peerBF.Has(piece) {
 		return
 	}
 
+	peerBF.Set(piece)
+	pk.peerBitfields[peer] = peerBF
 	pk.availability.Move(piece, 1)
 }
 
 func (pk *Picker) OnPeerGone(peer netip.AddrPort) {
 	pk.peerMu.Lock()
-	peerBF := pk.peerBitfields[peer]
+	peerBF, ok := pk.peerBitfields[peer]
+	if ok {
+		peerBF = peerBF.Clone()
+	}
+
 	assignments := pk.peerBlockAssignments[peer]
 	keys := make([]uint64, 0, len(assignments))
+
 	for k := range assignments {
 		keys = append(keys, k)
 	}
 	pk.peerMu.Unlock()
 
-	for key := range keys {
+	for _, key := range keys {
 		piece := int(key >> 32)
 		begin := int(key & 0xFFFFFFFF)
 
-		pk.mu.RLock()
+		pk.mu.Lock()
 		ps := pk.pieces[piece]
-		pk.mu.RUnlock()
-
 		blockIdx := BlockIndexForBegin(begin, int(ps.length), BlockLength)
 		pk.resetBlockToWant(piece, blockIdx)
+		pk.mu.Unlock()
 	}
 
-	pk.updatePieceAvailability(peerBF, -1)
+	if ok {
+		pk.updatePieceAvailability(peerBF, -1)
+	}
 	pk.cleanupPeerState(peer)
 }
 
 func (pk *Picker) OnTimeout(peer netip.AddrPort, piece, begin int) {
 	pk.unassignBlockFromPeer(peer, piece, begin)
 
-	pk.mu.RLock()
+	pk.mu.Lock()
 	ps := pk.pieces[piece]
-	pk.mu.RUnlock()
-
 	blockIdx := BlockIndexForBegin(begin, int(ps.length), BlockLength)
 	pk.resetBlockToWant(piece, blockIdx)
+	pk.mu.Unlock()
+}
+
+func (pk *Picker) OnBlockReceived(peer netip.AddrPort, piece, begin int) {
+	pk.unassignBlockFromPeer(peer, piece, begin)
+
+	pk.mu.Lock()
+	defer pk.mu.Unlock()
+
+	if piece < 0 || piece >= pk.PieceCount {
+		return
+	}
+
+	ps := pk.pieces[piece]
+	blockIdx := BlockIndexForBegin(begin, int(ps.length), BlockLength)
+	if blockIdx < 0 || blockIdx >= ps.blockCount {
+		return
+	}
+
+	blk := ps.blocks[blockIdx]
+	if blk.status == blockInflight {
+		blk.status = blockDone
+		ps.doneBlocks++
+		if pk.inflightRequests > 0 {
+			pk.inflightRequests--
+		}
+		if pk.remainingBlocks > 0 {
+			pk.remainingBlocks--
+		}
+	}
 }
 
 func (pk *Picker) findAvailableBlock(piece *pieceState, peer netip.AddrPort) (int, bool) {
-	pk.mu.RLock()
-	defer pk.mu.RUnlock()
-
 	for j := 0; j < piece.blockCount; j++ {
-		block := piece.blocks[j]
+		blk := piece.blocks[j]
 		begin := j * BlockLength
 
-		if block.status == blockWant && !pk.isBlockAssignedtoPeer(peer, piece.index, begin) {
+		if blk.status == blockWant && !pk.isBlockAssignedtoPeer(peer, piece.index, begin) {
 			return j, true
 		}
 	}
-
 	return -1, false
 }
 
@@ -209,9 +238,6 @@ func (pk *Picker) resetBlockToWant(piece int, blockIdx int) {
 	if !pk.isValidPiece(piece) {
 		return
 	}
-
-	pk.mu.RLock()
-	defer pk.mu.Unlock()
 
 	p := pk.pieces[piece]
 	if blockIdx >= 0 && blockIdx < len(p.blocks) {
@@ -232,6 +258,7 @@ func (pk *Picker) assignBlockToPeer(peer netip.AddrPort, piece, begin int) {
 	if pk.peerBlockAssignments[peer] == nil {
 		pk.peerBlockAssignments[peer] = make(map[uint64]struct{})
 	}
+
 	pk.peerBlockAssignments[peer][key] = struct{}{}
 	pk.peerInflightCount[peer]++
 }
@@ -290,9 +317,9 @@ func (pk *Picker) cleanupPeerState(peer netip.AddrPort) {
 }
 
 func (pk *Picker) updatePieceAvailability(peerBF bitfield.Bitfield, delta int) {
-	pk.mu.Lock()
+	pk.mu.RLock()
 	weHave := pk.bitfield.Clone()
-	pk.mu.Unlock()
+	pk.mu.RUnlock()
 
 	for i := 0; i < pk.PieceCount; i++ {
 		if peerBF.Has(i) && !weHave.Has(i) {
@@ -307,28 +334,18 @@ func (pk *Picker) isValidPiece(piece int) bool {
 		return false
 	}
 
-	pk.mu.RLock()
-	defer pk.mu.RUnlock()
-
 	return !pk.bitfield.Has(piece) && !pk.pieces[piece].verified
 }
 
-func (pk *Picker) setBlockInflight(
-	p *pieceState,
-	blockIdx int,
-	peer netip.AddrPort,
-) (begin, length int) {
-	begin, length = getBlockInfo(p, blockIdx)
-
-	pk.mu.Lock()
+func (pk *Picker) createRequest(peer netip.AddrPort, p *pieceState, blockIdx int) *Request {
+	begin, length := getBlockInfo(p, blockIdx)
 	if p.blocks[blockIdx].status == blockWant {
 		p.blocks[blockIdx].status = blockInflight
 		pk.inflightRequests++
 	}
-	pk.mu.Unlock()
 
 	pk.assignBlockToPeer(peer, p.index, begin)
-	return
+	return &Request{Piece: p.index, Begin: begin, Length: length}
 }
 
 func (pk *Picker) peerCapacity(peer netip.AddrPort) int {
@@ -344,7 +361,6 @@ func blockKey(piece, begin int) uint64 {
 	return uint64(piece)<<32 | uint64(begin)
 }
 
-// getBlockInfo returns begin and length for a block in a piece
 func getBlockInfo(piece *pieceState, blockIdx int) (begin, length int) {
 	begin = blockIdx * BlockLength
 	length = BlockLength
