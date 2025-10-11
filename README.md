@@ -13,13 +13,9 @@ right?
 Jokes aside, what got me hooked was [this random video](https://www.youtube.com/watch?v=cvQrNoCwxgE)
 from 11 years ago which talked about crawling DHTs.
 
----
-
 > [!WARNING]
 > This project is highly unstable and under active development. Expect breaking
 > changes and incomplete features.
-
----
 
 ## Features
 
@@ -29,8 +25,6 @@ from 11 years ago which talked about crawling DHTs.
 - Piece download and verification.
 - Sequential, random, and rarest-first piece selection and download strategy.
 - Cross-platform desktop UI using [Wails](https://wails.io/).
-
----
 
 ## Build
 
@@ -44,8 +38,6 @@ git clone https://github.com/prxssh/rabbit
 cd rabbit
 wails dev
 ```
-
----
 
 ## References
 
