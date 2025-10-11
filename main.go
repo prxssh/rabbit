@@ -45,7 +45,7 @@ func main() {
 
 func setupLogger() {
 	opts := logging.DefaultOptions()
-	opts.SlogOpts.Level = slog.LevelDebug
+	opts.SlogOpts.Level = slog.LevelInfo
 	opts.SlogOpts.AddSource = false
 
 	h := logging.NewPrettyHandler(os.Stdout, &opts)

@@ -69,6 +69,20 @@ type SwarmMetrics struct {
 	UploadRate      uint64 `json:"uploadRate"`
 }
 
+// PieceStates returns the current state of each piece as integer codes:
+// 0 = NotStarted, 1 = InProgress, 2 = Completed.
+func (s *Swarm) PieceStates() []int {
+	if s.piecePicker == nil {
+		return nil
+	}
+	states := s.piecePicker.PieceStates()
+	out := make([]int, len(states))
+	for i, st := range states {
+		out[i] = int(st)
+	}
+	return out
+}
+
 func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	cfg := config.Load()
 
@@ -98,7 +112,7 @@ func (s *Swarm) Run(ctx context.Context) error {
 	wg.Go(func() { s.maintenanceLoop(ctx) })
 	wg.Go(func() { s.admitPeersLoop(ctx) })
 	wg.Go(func() { s.statsLoop(ctx) })
-	// wg.Go(func() { s.peerRequestTimeoutLoop(ctx) })
+	wg.Go(func() { s.peerRequestTimeoutLoop(ctx) })
 	wg.Wait()
 
 	return nil
@@ -396,6 +410,7 @@ func (s *Swarm) peerRequestTimeoutLoop(ctx context.Context) error {
 					continue
 				}
 
+				l.Error("piece timed out, cancelling", "piece", req.Piece)
 				peer.SendCancel(req.Piece, req.Begin, req.Length)
 			}
 		}
@@ -418,8 +433,18 @@ func (s *Swarm) onBitfield(addr netip.AddrPort, bf bitfield.Bitfield) {
 	}
 	s.piecePicker.OnPeerBitfield(addr, bf)
 
-	for _, req := range s.piecePicker.NextForPeer(addr) {
-		peer.SendRequest(req.Piece, req.Begin, req.Length)
+	// Signal interest based on availability vs our bitfield
+	if s.piecePicker.InterestedInPeer(addr) {
+		peer.SendInterested()
+	} else {
+		peer.SendNotInterested()
+	}
+
+	// Only attempt requests if the peer has unchoked us
+	if !peer.PeerChoking() {
+		for _, req := range s.piecePicker.NextForPeer(addr) {
+			peer.SendRequest(req.Piece, req.Begin, req.Length)
+		}
 	}
 }
 
@@ -430,8 +455,18 @@ func (s *Swarm) onHave(addr netip.AddrPort, piece int) {
 	}
 	s.piecePicker.OnPeerHave(addr, piece)
 
-	for _, req := range s.piecePicker.NextForPeer(addr) {
-		peer.SendRequest(req.Piece, req.Begin, req.Length)
+	// Update interest when new availability arrives
+	if s.piecePicker.InterestedInPeer(addr) {
+		peer.SendInterested()
+	} else {
+		peer.SendNotInterested()
+	}
+
+	// Only request blocks when not choked
+	if !peer.PeerChoking() {
+		for _, req := range s.piecePicker.NextForPeer(addr) {
+			peer.SendRequest(req.Piece, req.Begin, req.Length)
+		}
 	}
 }
 

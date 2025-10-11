@@ -127,6 +127,24 @@ func (pk *Picker) Bitfield() bitfield.Bitfield {
 	return pk.bitfield
 }
 
+// InterestedInPeer reports whether the given peer has at least one piece
+// we don't yet have verified. This is used by the swarm to decide whether
+// to signal Interested/NotInterested.
+func (pk *Picker) InterestedInPeer(addr netip.AddrPort) bool {
+	peerBF, ok := pk.getPeerBitfield(addr)
+	if !ok {
+		return false
+	}
+
+	weHave := pk.Bitfield()
+	for i := 0; i < pk.PieceCount; i++ {
+		if peerBF.Has(i) && !weHave.Has(i) {
+			return true
+		}
+	}
+	return false
+}
+
 func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
 	pk.peerMu.Lock()
 	pk.peerBitfields[peer] = bf

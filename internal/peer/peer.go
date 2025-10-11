@@ -485,6 +485,7 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 		}
 
 		p.onPiece(p.addr, int(piece), int(begin), block)
+		p.requestWork(p.addr)
 		p.stats.PiecesReceived.Add(1)
 		p.stats.Downloaded.Add(uint64(len(block)))
 	case protocol.MsgRequest:

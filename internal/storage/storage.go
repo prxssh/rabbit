@@ -159,9 +159,44 @@ func (s *Store) BufferBlock(data []byte, bi BlockInfo) {
 		s.buffers[bi.PieceIndex] = buf
 	}
 
+	// Compute safe copy bounds for this block within the piece buffer.
 	begin := bi.BlockIndex * int(bi.BlockLength)
-	end := begin + len(data)
-	copy(buf.data[begin:end], data)
+
+	// Effective piece length (handles last piece being shorter)
+	effPieceLen := bi.PieceLength
+	if bi.IsLastPiece {
+		effPieceLen = piece.LastPieceLength(s.size, bi.PieceLength)
+	}
+
+	// Determine the expected length for this block index within the piece
+	// to avoid overrun when the last block is shorter than BlockLength.
+	bc := piece.BlockCountForPiece(effPieceLen, bi.BlockLength)
+	var expected int
+	if bi.BlockIndex == bc-1 {
+		expected = int(piece.LastBlockLength(effPieceLen, bi.BlockLength))
+	} else {
+		expected = int(bi.BlockLength)
+	}
+
+	// Clamp copy length to both expected and remaining buffer capacity
+	// to prevent slice bounds panic from malformed/large payloads.
+	remain := int(buf.size) - begin
+	if remain <= 0 {
+		return
+	}
+
+	n := len(data)
+	if n > expected {
+		n = expected
+	}
+	if n > remain {
+		n = remain
+	}
+	if n <= 0 {
+		return
+	}
+
+	copy(buf.data[begin:begin+n], data[:n])
 }
 
 // FlushPiece assembles the buffered piece, verifies its SHA-1, and writes the
