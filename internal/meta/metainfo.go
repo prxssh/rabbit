@@ -26,12 +26,12 @@ type Info struct {
 	PieceLength int32             `json:"pieceLength"`
 	Pieces      [][sha1.Size]byte `json:"pieces"`
 	Private     bool              `json:"private"`
-	Length      uint64            `json:"length"`
+	Length      int64             `json:"length"`
 	Files       []*File           `json:"files"`
 }
 
 type File struct {
-	Length uint64   `json:"length"`
+	Length int64    `json:"length"`
 	Path   []string `json:"path"`
 }
 
@@ -49,12 +49,12 @@ var (
 	ErrCreationDateInvalid = fmt.Errorf("metainfo: invalid creation date")
 )
 
-func (m *Metainfo) Size() uint64 {
+func (m *Metainfo) Size() int64 {
 	if m.Info.Length > 0 {
 		return m.Info.Length
 	}
 
-	var sum uint64
+	var sum int64
 	for _, f := range m.Info.Files {
 		sum += f.Length
 	}
@@ -186,7 +186,7 @@ func parseInfo(anyInfo any) (*Info, error) {
 		if err != nil || length < 0 {
 			return nil, fmt.Errorf("metainfo: invalid 'length'")
 		}
-		out.Length = uint64(length)
+		out.Length = length
 
 	case hasFiles && !hasLength:
 		out.Files, err = parseFiles(filesVal)
@@ -232,7 +232,7 @@ func parseFiles(v any) ([]*File, error) {
 			return nil, fmt.Errorf("metainfo: files[%d]: invalid path", i)
 		}
 
-		files = append(files, &File{Length: uint64(ln), Path: segments})
+		files = append(files, &File{Length: ln, Path: segments})
 	}
 
 	return files, nil
