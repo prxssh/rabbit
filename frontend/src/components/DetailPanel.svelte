@@ -18,7 +18,7 @@
 
   $: meta = torrentData?.metainfo
   $: info = meta?.info
-  $: infoHash = info?.hash ? formatHash(info.hash) : ''
+  $: infoHash = meta?.hash ? formatHash(meta.hash) : ''
   $: totalPieces = info?.pieces?.length || 0
   $: effectivePieceStates = pieceStates.length > 0 ? pieceStates : new Array(totalPieces).fill(0)
 
@@ -43,7 +43,7 @@
         <Section title="General Information">
           <div class="info-grid">
             <InfoCard label="Name" value={info?.name || 'N/A'} />
-            <InfoCard label="Info Hash" value={info?.hash ? formatHash(info.hash) : 'N/A'} mono />
+            <InfoCard label="Info Hash" value={meta?.hash ? formatHash(meta.hash) : 'N/A'} mono />
             <InfoCard label="Size" value={formatBytes(torrentData?.size || 0)} />
             <InfoCard label="Piece Length" value={info?.pieceLength ? formatBytes(info.pieceLength) : 'N/A'} />
             <InfoCard label="Total Pieces" value={String(info?.pieces?.length || 0)} />

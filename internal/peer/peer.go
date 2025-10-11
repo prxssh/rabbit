@@ -44,6 +44,7 @@ type Peer struct {
 	onDisconnect  func(netip.AddrPort)
 	onHandshake   func(netip.AddrPort)
 	onPiece       func(netip.AddrPort, int, int, []byte)
+	requestWork   func(netip.AddrPort)
 }
 
 // PeerStats holds per-connection counters/timestamps. All counters are
@@ -134,6 +135,7 @@ type PeerOpts struct {
 	OnDisconnect func(netip.AddrPort)
 	OnHandshake  func(netip.AddrPort)
 	OnPiece      func(netip.AddrPort, int, int, []byte)
+	RequestWork  func(netip.AddrPort)
 }
 
 func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, error) {
@@ -162,6 +164,7 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, e
 		onDisconnect: opts.OnDisconnect,
 		onHandshake:  opts.OnHandshake,
 		onPiece:      opts.OnPiece,
+		requestWork:  opts.RequestWork,
 		bitfield:     bitfield.New(opts.PieceCount),
 		outbox:       make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
 	}
@@ -236,10 +239,6 @@ func (p *Peer) SendHave(piece uint32) {
 	p.enqueueMessage(protocol.MessageHave(piece))
 }
 
-func (p *Peer) SendBitfield(bf *bitfield.Bitfield) {
-	p.enqueueMessage(protocol.MessageBitfield(bf.Bytes()))
-}
-
 func (p *Peer) SendCancel(piece, begin, length int) {
 	p.enqueueMessage(protocol.MessageCancel(piece, begin, length))
 }
@@ -310,6 +309,8 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 				l.Warn("exiting; outbox is closed")
 				return nil
 			}
+
+			l.Debug("writing message", "message", message.ID.String())
 
 			if err := p.writeMessage(message); err != nil {
 				l.Warn(
@@ -462,6 +463,7 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 		p.setState(maskPeerChoking, true)
 	case protocol.MsgUnchoke:
 		p.setState(maskPeerChoking, false)
+		p.requestWork(p.addr)
 	case protocol.MsgInterested:
 		p.setState(maskPeerInterested, true)
 	case protocol.MsgNotInterested:

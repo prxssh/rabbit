@@ -22,7 +22,7 @@ export namespace config {
 	    RequestQueueTime: number;
 	    RequestTimeout: number;
 	    EndgameDupPerBlock: number;
-	    EndgameEnabled: boolean;
+	    EndgameThreshold: number;
 	    MaxRequestsPerPiece: number;
 	    UploadSlots: number;
 	    RechokeInterval: number;
@@ -64,7 +64,7 @@ export namespace config {
 	        this.RequestQueueTime = source["RequestQueueTime"];
 	        this.RequestTimeout = source["RequestTimeout"];
 	        this.EndgameDupPerBlock = source["EndgameDupPerBlock"];
-	        this.EndgameEnabled = source["EndgameEnabled"];
+	        this.EndgameThreshold = source["EndgameThreshold"];
 	        this.MaxRequestsPerPiece = source["MaxRequestsPerPiece"];
 	        this.UploadSlots = source["UploadSlots"];
 	        this.RechokeInterval = source["RechokeInterval"];

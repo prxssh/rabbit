@@ -112,8 +112,8 @@
     let aggUpload = 0
     const updatedTorrents = await Promise.all(
       torrents.map(async (torrent) => {
-        if (torrent.torrentData?.metainfo?.info?.hash) {
-          const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
+        if (torrent.torrentData?.metainfo?.hash) {
+          const infoHash = formatHash(torrent.torrentData.metainfo.hash)
           try {
             const stats = await GetTorrentStats(infoHash)
             if (stats) {
@@ -212,8 +212,8 @@
 
   async function removeTorrent(id: number) {
     const torrent = torrents.find(t => t.id === id)
-    if (torrent && torrent.torrentData?.metainfo?.info?.hash) {
-      const infoHash = formatHash(torrent.torrentData.metainfo.info.hash)
+    if (torrent && torrent.torrentData?.metainfo?.hash) {
+      const infoHash = formatHash(torrent.torrentData.metainfo.hash)
       try {
         await RemoveTorrent(infoHash)
         uploadStatus = 'Torrent removed'

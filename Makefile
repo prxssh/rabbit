@@ -1,10 +1,10 @@
-# Root Makefile — Wails app lives in cmd/rabbit (wails.json + main.go)
+# Root Makefile — Wails app lives at repo root (wails.json + main.go)
 SHELL := /bin/bash
 .ONESHELL:
 .SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := help
 
-APP_DIR       := cmd/rabbit
+APP_DIR       := .
 FRONTEND_DIR  := frontend
 ASSETS_DST    := $(APP_DIR)/frontend/dist
 WAILS         := wails
@@ -25,7 +25,7 @@ help:
 run:
 	cd "$(APP_DIR)" && "$(WAILS)" dev
 
-build: frontend assets
+build: frontend
 	cd "$(APP_DIR)" && "$(WAILS)" build
 
 frontend:
@@ -33,9 +33,7 @@ frontend:
 	npm --prefix "$(FRONTEND_DIR)" run build
 
 assets:
-	rm -rf "$(ASSETS_DST)"
-	mkdir -p "$(APP_DIR)/frontend"
-	cp -R "$(FRONTEND_DIR)/dist" "$(ASSETS_DST)"
+	@echo "No asset staging required; embedding uses $(ASSETS_DST)"
 
 gui: build
 	@if [ -d "$(APP_DIR)/build/bin/rabbit.app" ]; then \
@@ -51,7 +49,6 @@ gui: build
 clean:
 	go clean
 	@if [ -d "$(APP_DIR)/build" ]; then rm -rf "$(APP_DIR)/build"; fi
-	@if [ -d "$(ASSETS_DST)" ]; then rm -rf "$(ASSETS_DST)"; fi
 	cd "$(APP_DIR)" && "$(WAILS)" build -clean || true
 
 format:
