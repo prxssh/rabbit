@@ -77,7 +77,7 @@ func (pk *Picker) selectEndgameBlocks(addr netip.AddrPort, n int) []*Request {
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
 
-	reqs := make([]*Request, n, 0)
+	reqs := make([]*Request, 0, n)
 
 	for _, p := range pk.pieces {
 		if len(reqs) >= n {
