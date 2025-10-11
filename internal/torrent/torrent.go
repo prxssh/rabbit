@@ -8,12 +8,14 @@ import (
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/meta"
 	"github.com/prxssh/rabbit/internal/peer"
+	"github.com/prxssh/rabbit/internal/piece"
+	"github.com/prxssh/rabbit/internal/storage"
 	"github.com/prxssh/rabbit/internal/tracker"
 	"golang.org/x/sync/errgroup"
 )
 
 type Torrent struct {
-	Size        uint64         `json:"size"`
+	Size        int64          `json:"size"`
 	Metainfo    *meta.Metainfo `json:"metainfo"`
 	tracker     *tracker.Tracker
 	peerManager *peer.Swarm
@@ -35,10 +37,27 @@ func NewTorrent(data []byte) (*Torrent, error) {
 		log:      slog.Default().With("torrent", metainfo.Info.Name),
 	}
 
+	storage, err := storage.NewStore(
+		metainfo.Info.Name,
+		metainfo.Info.Files,
+		metainfo.Info.PieceLength,
+		torrent.log,
+	)
+	if err != nil {
+		return nil, err
+	}
+	piecePicker := piece.NewPicker(
+		torrent.Size,
+		metainfo.Info.PieceLength,
+		metainfo.Info.Pieces,
+	)
+
 	peerManager, err := peer.NewSwarm(&peer.SwarmOpts{
-		Log:        torrent.log,
-		InfoHash:   metainfo.InfoHash,
-		PieceCount: len(metainfo.Info.Pieces),
+		Log:         torrent.log,
+		Storage:     storage,
+		PiecePicker: piecePicker,
+		InfoHash:    metainfo.InfoHash,
+		PieceCount:  len(metainfo.Info.Pieces),
 	})
 	if err != nil {
 		return nil, err
@@ -110,7 +129,7 @@ func (t *Torrent) GetStats() *Stats {
 func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
 	stats := t.peerManager.Stats()
 	downloaded := stats.TotalDownloaded
-	left := t.Size - downloaded
+	left := t.Size - int64(downloaded)
 
 	event := tracker.EventNone
 	if left == 0 {

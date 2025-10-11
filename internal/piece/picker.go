@@ -120,6 +120,13 @@ func NewPicker(size int64, pieceLength int32, pieceHashes [][sha1.Size]byte) *Pi
 	}
 }
 
+func (pk *Picker) Bitfield() bitfield.Bitfield {
+	pk.mu.RLock()
+	defer pk.mu.RUnlock()
+
+	return pk.bitfield
+}
+
 func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
 	pk.peerMu.Lock()
 	pk.peerBitfields[peer] = bf
@@ -181,11 +188,11 @@ func (pk *Picker) OnPeerGone(peer netip.AddrPort) {
 	pk.cleanupPeerState(peer)
 }
 
-func (pk *Picker) CheckTimeouts(timeout time.Duration) []*Request {
+func (pk *Picker) CheckTimeouts() []*Cancel {
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
 
-	var timeouts []*Request
+	var timeouts []*Cancel
 	now := time.Now()
 
 	for _, p := range pk.pieces {
@@ -199,15 +206,17 @@ func (pk *Picker) CheckTimeouts(timeout time.Duration) []*Request {
 				continue
 			}
 
-			if now.Sub(blk.owner.requestedAt) <= timeout {
+			if now.Sub(blk.owner.requestedAt) <= 3*time.Second {
 				continue
 			}
 
 			begin, length := getBlockInfo(p, bi)
-			timeouts = append(
-				timeouts,
-				&Request{Piece: p.index, Begin: begin, Length: length},
-			)
+			timeouts = append(timeouts, &Cancel{
+				Peer:   blk.owner.addr,
+				Piece:  p.index,
+				Begin:  begin,
+				Length: length,
+			})
 
 			pk.unassignBlockFromPeer(blk.owner.addr, p.index, begin)
 			blk.owner = nil
@@ -219,29 +228,32 @@ func (pk *Picker) CheckTimeouts(timeout time.Duration) []*Request {
 	return timeouts
 }
 
-func (pk *Picker) OnBlockReceived(peer netip.AddrPort, piece, begin int) {
+func (pk *Picker) OnBlockReceived(peer netip.AddrPort, piece, begin int) bool {
+	if piece < 0 || piece >= pk.PieceCount {
+		return false
+	}
+
 	pk.unassignBlockFromPeer(peer, piece, begin)
 
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
 
-	if piece < 0 || piece >= pk.PieceCount {
-		return
-	}
-
 	ps := pk.pieces[piece]
 	blockIdx := BlockIndexForBegin(begin, int(ps.length), BlockLength)
 	if blockIdx < 0 || blockIdx >= ps.blockCount {
-		return
+		return false
 	}
 
 	blk := ps.blocks[blockIdx]
 	if blk.status == blockInflight {
-		blk.status = blockDone
 		ps.doneBlocks++
+		blk.status = blockDone
+		blk.pendingRequests = 0
+
 		if pk.inflightRequests > 0 {
 			pk.inflightRequests--
 		}
+
 		if pk.remainingBlocks > 0 {
 			pk.remainingBlocks--
 		}
@@ -250,6 +262,8 @@ func (pk *Picker) OnBlockReceived(peer netip.AddrPort, piece, begin int) {
 	if pk.remainingBlocks <= config.Load().EndgameThreshold {
 		pk.endgame = true
 	}
+
+	return ps.doneBlocks == ps.blockCount
 }
 
 func (pk *Picker) findAvailableBlock(piece *pieceState, peer netip.AddrPort) (int, bool) {
@@ -386,6 +400,21 @@ func (pk *Picker) peerCapacity(peer netip.AddrPort) int {
 	pk.peerMu.RUnlock()
 
 	return max(0, config.Load().MaxInflightRequestsPerPeer-used)
+}
+
+func (pk *Picker) inEndgame() bool {
+	pk.mu.RLock()
+	defer pk.mu.RUnlock()
+
+	return pk.endgame
+}
+
+func (pk *Picker) getPeerBitfield(addr netip.AddrPort) (bitfield.Bitfield, bool) {
+	pk.mu.RLock()
+	defer pk.mu.RUnlock()
+
+	peerBF, ok := pk.peerBitfields[addr]
+	return peerBF, ok
 }
 
 // blockKey generates a unique key for a block (piece, begin)

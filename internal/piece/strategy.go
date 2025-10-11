@@ -8,42 +8,37 @@ import (
 	"github.com/prxssh/rabbit/internal/utils/bitfield"
 )
 
-func (pk *Picker) NextForPeer(peer *PeerView, n int) []*Request {
-	if !peer.Unchoked || n <= 0 {
-		return nil
-	}
-
-	capacity := pk.peerCapacity(peer.Addr)
+func (pk *Picker) NextForPeer(addr netip.AddrPort) []*Request {
+	capacity := pk.peerCapacity(addr)
 	if capacity == 0 {
 		return nil
 	}
 
-	n = min(n, capacity)
-
-	pk.mu.RLock()
-	endgame := pk.endgame
-	pk.mu.RUnlock()
-
-	if endgame {
-		return pk.selectEndgameBlocks(peer, n)
+	if pk.inEndgame() {
+		return pk.selectEndgameBlocks(addr, capacity)
 	}
 
-	reqs := make([]*Request, 0, n)
+	peerBF, ok := pk.getPeerBitfield(addr)
+	if !ok {
+		return nil
+	}
+
+	reqs := make([]*Request, 0, capacity)
 	count := 0
 
-	for i := 0; i < pk.PieceCount && count < n; i++ {
+	for i := 0; i < pk.PieceCount && count < capacity; i++ {
 		pk.mu.RLock()
 		p := pk.pieces[i]
-		if p.verified || p.doneBlocks == 0 || !peer.Bitfield.Has(i) {
+		if p.verified || p.doneBlocks == 0 || !peerBF.Has(i) {
 			pk.mu.RUnlock()
 			continue
 		}
 		pk.mu.RUnlock()
 
 		pk.mu.Lock()
-		for count < n {
-			if block, ok := pk.findAvailableBlock(p, peer.Addr); ok {
-				reqs = append(reqs, pk.createRequest(peer.Addr, p, block))
+		for count < capacity {
+			if block, ok := pk.findAvailableBlock(p, addr); ok {
+				reqs = append(reqs, pk.createRequest(addr, p, block))
 				count++
 			} else {
 				break
@@ -52,7 +47,7 @@ func (pk *Picker) NextForPeer(peer *PeerView, n int) []*Request {
 		pk.mu.Unlock()
 	}
 
-	if count == n {
+	if count == capacity {
 		return reqs
 	}
 
@@ -67,14 +62,15 @@ func (pk *Picker) NextForPeer(peer *PeerView, n int) []*Request {
 		pieceSelectionStrategy = pk.selectRarestFirst
 	}
 
-	remaining := n - count
-	strategyRequests := pieceSelectionStrategy(peer.Addr, peer.Bitfield, remaining)
+	remaining := capacity - count
+	strategyRequests := pieceSelectionStrategy(addr, peerBF, remaining)
 	reqs = append(reqs, strategyRequests...)
 	return reqs
 }
 
-func (pk *Picker) selectEndgameBlocks(peer *PeerView, n int) []*Request {
-	if !peer.Unchoked || n <= 0 {
+func (pk *Picker) selectEndgameBlocks(addr netip.AddrPort, n int) []*Request {
+	peerBF, ok := pk.getPeerBitfield(addr)
+	if !ok {
 		return nil
 	}
 
@@ -88,7 +84,7 @@ func (pk *Picker) selectEndgameBlocks(peer *PeerView, n int) []*Request {
 			break
 		}
 
-		if p.verified || !peer.Bitfield.Has(p.index) {
+		if p.verified || !peerBF.Has(p.index) {
 			continue
 		}
 
@@ -98,11 +94,11 @@ func (pk *Picker) selectEndgameBlocks(peer *PeerView, n int) []*Request {
 			}
 
 			if blk.status == blockInflight {
-				if blk.owner != nil && blk.owner.addr == peer.Addr {
+				if blk.owner != nil && blk.owner.addr == addr {
 					continue
 				}
 
-				reqs = append(reqs, pk.createRequest(peer.Addr, p, bi))
+				reqs = append(reqs, pk.createRequest(addr, p, bi))
 			}
 		}
 	}

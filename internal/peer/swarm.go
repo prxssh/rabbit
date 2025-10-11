@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/piece"
+	"github.com/prxssh/rabbit/internal/storage"
+	"github.com/prxssh/rabbit/internal/utils/bitfield"
 )
 
 type Swarm struct {
@@ -23,6 +26,8 @@ type Swarm struct {
 	cancel          context.CancelFunc
 	closeOnce       sync.Once
 	closed          atomic.Bool
+	storage         *storage.Store
+	piecePicker     *piece.Picker
 	refillPeersHook func()
 }
 
@@ -42,9 +47,11 @@ type SwarmStats struct {
 }
 
 type SwarmOpts struct {
-	Log        *slog.Logger
-	PieceCount int
-	InfoHash   [sha1.Size]byte
+	Log         *slog.Logger
+	PieceCount  int
+	InfoHash    [sha1.Size]byte
+	Storage     *storage.Store
+	PiecePicker *piece.Picker
 }
 
 type SwarmMetrics struct {
@@ -62,8 +69,6 @@ type SwarmMetrics struct {
 	UploadRate      uint64 `json:"uploadRate"`
 }
 
-// PeerMetrics is a snapshot of a single peer's connection + transfer stats.
-// Exported for binding to the frontend via Wails.
 func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	cfg := config.Load()
 
@@ -71,6 +76,8 @@ func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 		infoHash:    opts.InfoHash,
 		pieceCount:  opts.PieceCount,
 		stats:       &SwarmStats{},
+		storage:     opts.Storage,
+		piecePicker: opts.PiecePicker,
 		peers:       make(map[netip.AddrPort]*Peer),
 		admitPeerCh: make(chan netip.AddrPort, cfg.MaxPeers),
 		log:         opts.Log.With("src", "swarm"),
@@ -91,6 +98,7 @@ func (s *Swarm) Run(ctx context.Context) error {
 	wg.Go(func() { s.maintenanceLoop(ctx) })
 	wg.Go(func() { s.admitPeersLoop(ctx) })
 	wg.Go(func() { s.statsLoop(ctx) })
+	wg.Go(func() { s.peerRequestTimeoutLoop(ctx) })
 	wg.Wait()
 
 	return nil
@@ -180,9 +188,14 @@ func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error)
 	s.stats.ConnectingPeers.Add(1)
 
 	peer, err := NewPeer(ctx, addr, &PeerOpts{
-		InfoHash:   s.infoHash,
-		Log:        s.log,
-		PieceCount: s.pieceCount,
+		InfoHash:     s.infoHash,
+		Log:          s.log,
+		PieceCount:   s.pieceCount,
+		OnBitfield:   s.onBitfield,
+		OnHave:       s.onHave,
+		OnDisconnect: s.onDisconnect,
+		OnHandshake:  s.onPeerHandshake,
+		OnPiece:      s.onBlockReceived,
 	})
 
 	s.stats.ConnectingPeers.Add(^uint32(0))
@@ -212,6 +225,14 @@ func (s *Swarm) RemovePeer(addr netip.AddrPort) {
 
 	peer.Close()
 	s.stats.TotalPeers.Add(^uint32(0))
+}
+
+func (s *Swarm) GetPeer(addr netip.AddrPort) (*Peer, bool) {
+	s.peerMu.RLock()
+	defer s.peerMu.RUnlock()
+
+	peer, ok := s.peers[addr]
+	return peer, ok
 }
 
 func (s *Swarm) maintenanceLoop(ctx context.Context) error {
@@ -346,4 +367,98 @@ func (s *Swarm) statsLoop(ctx context.Context) error {
 			s.stats.DownloadingFrom.Store(downloadingFrom)
 		}
 	}
+}
+
+func (s *Swarm) peerRequestTimeoutLoop(ctx context.Context) error {
+	l := s.log.With("component", "peer request timeout loop")
+	l.Debug("started")
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.Warn("context done, exiting", "error", ctx.Err())
+			return nil
+
+		case <-ticker.C:
+			timedOutRequests := s.piecePicker.CheckTimeouts()
+			l.Debug("timed out requests", "count", timedOutRequests)
+
+			for _, req := range timedOutRequests {
+				peer, ok := s.GetPeer(req.Peer)
+				if !ok {
+					continue
+				}
+
+				peer.SendCancel(req.Piece, req.Begin, req.Length)
+			}
+		}
+	}
+}
+
+func (s *Swarm) onPeerHandshake(addr netip.AddrPort) {
+	peer, ok := s.GetPeer(addr)
+	if !ok {
+		return
+	}
+
+	peer.SendBitfield(s.piecePicker.Bitfield())
+}
+
+func (s *Swarm) onBitfield(addr netip.AddrPort, bf bitfield.Bitfield) {
+	peer, ok := s.GetPeer(addr)
+	if !ok {
+		return
+	}
+	s.piecePicker.OnPeerBitfield(addr, bf)
+
+	for _, req := range s.piecePicker.NextForPeer(addr) {
+		peer.SendRequest(req.Piece, req.Begin, req.Length)
+	}
+}
+
+func (s *Swarm) onHave(addr netip.AddrPort, piece int) {
+	peer, ok := s.GetPeer(addr)
+	if !ok {
+		return
+	}
+	s.piecePicker.OnPeerHave(addr, piece)
+
+	for _, req := range s.piecePicker.NextForPeer(addr) {
+		peer.SendRequest(req.Piece, req.Begin, req.Length)
+	}
+}
+
+func (s *Swarm) onDisconnect(addr netip.AddrPort) {
+	s.piecePicker.OnPeerGone(addr)
+}
+
+func (s *Swarm) onBlockReceived(addr netip.AddrPort, pieceIdx, begin int, data []byte) {
+	completed := s.piecePicker.OnBlockReceived(addr, pieceIdx, begin)
+
+	pieceLen, blockLen, isLastPiece := s.piecePicker.PieceLength(pieceIdx)
+	blockIdx := piece.BlockIndexForBegin(begin, int(pieceLen), int(blockLen))
+
+	s.storage.BufferBlock(data, storage.BlockInfo{
+		PieceIndex:  pieceIdx,
+		BlockIndex:  blockIdx,
+		PieceLength: pieceLen,
+		BlockLength: blockLen,
+		IsLastPiece: isLastPiece,
+	})
+
+	if !completed {
+		return
+	}
+
+	hash := s.piecePicker.PieceHash(pieceIdx)
+	if err := s.storage.FlushPiece(pieceIdx, hash); err != nil {
+		s.log.Error("piece verification failed", "error", err.Error(), "piece", pieceIdx)
+		return
+	}
+
+	s.piecePicker.MarkPieceVerified(pieceIdx, true)
+	s.BroadcastHAVE(uint32(pieceIdx))
 }
