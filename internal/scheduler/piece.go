@@ -7,11 +7,8 @@ import (
 	"time"
 )
 
-// MaxBlockLength is the standard size of a data block requested from peers.
 const MaxBlockLength = 16 * 1024
 
-// PieceState provides a high-level summary of a piece's download status.
-// This is primarily intended for external use (e.g., UI, metrics).
 type PieceState int
 
 const (
@@ -21,8 +18,8 @@ const (
 )
 
 func (s *PieceScheduler) PieceStates() []PieceState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mut.RLock()
+	defer s.mut.RUnlock()
 
 	states := make([]PieceState, s.pieceCount)
 	for i, p := range s.pieces {
@@ -38,36 +35,19 @@ func (s *PieceScheduler) PieceStates() []PieceState {
 	return states
 }
 
-// Request defines a block of data to be requested from a peer.
-type Request struct {
-	// Piece is the zero-based piece index.
-	Piece int
-
-	// Begin is the zero-based byte offset within the piece.
-	Begin int
-
-	// Length is the requested length of the block in bytes. This is typically
-	// piece.BlockLength, except for the last block.
+type PieceRequest struct {
+	Piece  int
+	Begin  int
 	Length int
 }
 
-// Cancel represents an internal command to cancel a pending block request that
-// was previously send to the specific peer.
-type Cancel struct {
-	// Peer identifies which peer the original request was sent to.
-	Peer netip.AddrPort
-
-	// Piece is the zero-based piece index.
-	Piece int
-
-	// Begin is the zeor-based byte offset within the piece.
-	Begin int
-
-	// Length is the length of the block to be cancelled.
+type PieceCancel struct {
+	Peer   netip.AddrPort
+	Piece  int
+	Begin  int
 	Length int
 }
 
-// blockStatus represents the download state of a single block.
 type blockStatus uint8
 
 const (
@@ -76,26 +56,15 @@ const (
 	blockDone
 )
 
-// blockOwner tracks which peer an in-flight block was requested from.
 type blockOwner struct {
-	// peer is the address of the peer the request was sent to.
-	peer netip.AddrPort
-
-	// requestedAt is the time the request was sent, used for timeouts.
+	peer        netip.AddrPort
 	requestedAt time.Time
 }
 
-// block holds the dynamic state for a single block within a piece.
 type block struct {
-	// pendingRequests tracks how many active requests are out for this block.
 	pendingRequests int
-
-	// status is the current download state of the block (Want, Inflight, Done).
-	status blockStatus
-
-	// owner points to the peer this block was requested from. It is non-nil
-	// only when status is blockInflight.
-	owner *blockOwner
+	status          blockStatus
+	owner           *blockOwner
 }
 
 // piece describes one piece’s static metadata and dynamic progress.
@@ -150,15 +119,15 @@ func (s *PieceScheduler) PieceInfo(piece int) PieceInfo {
 }
 
 func (s *PieceScheduler) PieceHash(piece int) [sha1.Size]byte {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mut.RLock()
+	defer s.mut.RUnlock()
 
 	return s.pieces[piece].sha
 }
 
 func (s *PieceScheduler) FirstUnverifiedPiece() (int, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mut.RLock()
+	defer s.mut.RUnlock()
 
 	for i := 0; i < s.pieceCount; i++ {
 		if !s.pieces[i].verified {
@@ -174,8 +143,8 @@ func (s *PieceScheduler) MarkPieceVerified(piece int, ok bool) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mut.Lock()
+	defer s.mut.Unlock()
 
 	ps := s.pieces[piece]
 	if ps.verified {

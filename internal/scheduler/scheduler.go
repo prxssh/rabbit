@@ -87,7 +87,7 @@ func getDefaultDownloadDir() string {
 type peerState struct {
 	inflight         int
 	choked           bool
-	workQueue        chan *Request
+	workQueue        chan *PieceRequest
 	addr             netip.AddrPort
 	bitfield         bitfield.Bitfield
 	blockAssignments map[uint64]struct{}
@@ -98,7 +98,7 @@ func newPeerState(addr netip.AddrPort, pieceCount, workQueueSize int) *peerState
 		addr:             addr,
 		bitfield:         bitfield.New(pieceCount),
 		blockAssignments: make(map[uint64]struct{}),
-		workQueue:        make(chan *Request, workQueueSize),
+		workQueue:        make(chan *PieceRequest, workQueueSize),
 	}
 }
 
@@ -252,7 +252,7 @@ func (s *PieceScheduler) Bitfield() bitfield.Bitfield {
 	return s.bitfield
 }
 
-func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *Request {
+func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *PieceRequest {
 	s.peerStateMut.RLock()
 	if peerState, ok := s.peerState[peer]; ok {
 		s.peerStateMut.RUnlock()
@@ -274,46 +274,6 @@ func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *Request {
 
 func (s *PieceScheduler) GetEventQueue() chan<- Event {
 	return s.eventQueue
-}
-
-func (s *PieceScheduler) CheckTimeouts() []*Cancel {
-	s.mut.Lock()
-	defer s.mut.Unlock()
-
-	var timeouts []*Cancel
-	now := time.Now()
-
-	for _, p := range s.pieces {
-		if p.verified {
-			continue
-		}
-
-		for bi, blk := range p.blocks {
-			if blk.status != blockInflight || blk.owner == nil ||
-				blk.owner.requestedAt.IsZero() {
-				continue
-			}
-
-			if now.Sub(blk.owner.requestedAt) <= 30*time.Second {
-				continue
-			}
-
-			begin, length := blockInfo(p, bi)
-			timeouts = append(timeouts, &Cancel{
-				Peer:   blk.owner.peer,
-				Piece:  p.index,
-				Begin:  begin,
-				Length: length,
-			})
-
-			s.unassignBlockFromPeer(blk.owner.peer, p.index, begin)
-			blk.owner = nil
-			blk.status = blockWant
-			s.inflightRequests--
-		}
-	}
-
-	return timeouts
 }
 
 func (s *PieceScheduler) OnBlockReceived(peer netip.AddrPort, piece, begin int) bool {
@@ -402,7 +362,7 @@ func (s *PieceScheduler) assignBlockToPeer(peer *peerState, pieceIdx, blockIdx i
 	s.inflightRequests++
 	s.remainingBlocks--
 
-	req := &Request{Piece: pieceIdx, Begin: int(begin), Length: int(length)}
+	req := &PieceRequest{Piece: pieceIdx, Begin: int(begin), Length: int(length)}
 
 	select {
 	case peer.workQueue <- req:
