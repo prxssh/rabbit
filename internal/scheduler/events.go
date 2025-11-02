@@ -138,7 +138,7 @@ func (s *PieceScheduler) onPeerChoke(peer netip.AddrPort) {
 		return
 	}
 
-	ps.closed = true
+	ps.choked = true
 }
 
 func (s *PieceScheduler) onPeerUnchoke(peer netip.AddrPort) {
@@ -151,7 +151,7 @@ func (s *PieceScheduler) onPeerUnchoke(peer netip.AddrPort) {
 		return
 	}
 
-	ps.closed = true
+	ps.choked = false
 }
 
 func (s *PieceScheduler) onPiece(peer netip.AddrPort, p PieceData) {

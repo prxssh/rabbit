@@ -86,7 +86,7 @@ func getDefaultDownloadDir() string {
 
 type peerState struct {
 	inflight         int
-	closed           bool
+	choked           bool
 	workQueue        chan *Request
 	addr             netip.AddrPort
 	bitfield         bitfield.Bitfield
@@ -222,6 +222,9 @@ func NewPieceScheduler(opts Opts) (*PieceScheduler, error) {
 func (s *PieceScheduler) Run(ctx context.Context) error {
 	s.log.Debug("piece scheduler event loop started")
 
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -235,6 +238,9 @@ func (s *PieceScheduler) Run(ctx context.Context) error {
 			}
 
 			s.handleEvent(event)
+
+		case <-ticker.C:
+			s.findWorkForIdlePeers()
 		}
 	}
 }
@@ -470,4 +476,20 @@ func (s *PieceScheduler) isPieceNeeded(piece int) bool {
 	}
 
 	return !s.bitfield.Has(piece) && !s.pieces[piece].verified
+}
+
+func (s *PieceScheduler) findWorkForIdlePeers() {
+	candidates := make([]netip.AddrPort, 0, len(s.peerState))
+
+	s.peerStateMut.RLock()
+	for addr, ps := range s.peerState {
+		if !ps.choked && ps.inflight < s.cfg.MaxInflightRequestsPerPeer {
+			candidates = append(candidates, addr)
+		}
+	}
+	s.peerStateMut.RUnlock()
+
+	for _, addr := range candidates {
+		s.nextForPeer(addr)
+	}
 }
