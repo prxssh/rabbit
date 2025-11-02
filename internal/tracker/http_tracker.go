@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/prxssh/rabbit/internal/bencode"
 	"github.com/prxssh/rabbit/internal/config"
-	"github.com/prxssh/rabbit/internal/utils/cast"
+	"github.com/prxssh/rabbit/pkg/bencode"
+	"github.com/prxssh/rabbit/pkg/cast"
 )
 
 type HTTPTracker struct {

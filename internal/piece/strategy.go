@@ -5,7 +5,7 @@ import (
 	"net/netip"
 
 	"github.com/prxssh/rabbit/internal/config"
-	"github.com/prxssh/rabbit/internal/utils/bitfield"
+	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
 func (pk *Picker) NextForPeer(addr netip.AddrPort) []*Request {

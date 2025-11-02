@@ -69,10 +69,10 @@ func TestMessage_ConstructorsAndParsers(t *testing.T) {
 
 func TestMessage_ValidatePayloadSize_Errors(t *testing.T) {
 	tests := []Message{
-		{ID: MsgHave, Payload: []byte{}},
-		{ID: MsgRequest, Payload: []byte("too short")},       // 10 bytes
-		{ID: MsgCancel, Payload: []byte{1, 2, 3}},            // 3 bytes
-		{ID: MsgPiece, Payload: []byte{0, 1, 2, 3, 4, 5, 6}}, // 7 bytes
+		{ID: Have, Payload: []byte{}},
+		{ID: Request, Payload: []byte("too short")},       // 10 bytes
+		{ID: Cancel, Payload: []byte{1, 2, 3}},            // 3 bytes
+		{ID: Piece, Payload: []byte{0, 1, 2, 3, 4, 5, 6}}, // 7 bytes
 	}
 	for _, m := range tests {
 		if err := (&m).ValidatePayloadSize(); !errors.Is(err, ErrBadPayloadSize) {
@@ -90,15 +90,15 @@ func TestMessage_MarshalUnmarshal_Normal(t *testing.T) {
 	if got, want := binary.BigEndian.Uint32(b[0:4]), uint32(13); got != want { // 1 byte id + 12 payload
 		t.Fatalf("length prefix = %d, want %d", got, want)
 	}
-	if got := b[4]; got != byte(MsgRequest) {
-		t.Fatalf("id = %d, want %d", got, MsgRequest)
+	if got := b[4]; got != byte(Request) {
+		t.Fatalf("id = %d, want %d", got, Request)
 	}
 
 	var dec Message
 	if err := (&dec).UnmarshalBinary(b); err != nil {
 		t.Fatalf("UnmarshalBinary error: %v", err)
 	}
-	if dec.ID != MsgRequest || !bytes.Equal(dec.Payload, m.Payload) {
+	if dec.ID != Request || !bytes.Equal(dec.Payload, m.Payload) {
 		t.Fatalf("decoded mismatch: %+v vs %+v", dec, m)
 	}
 }
@@ -140,7 +140,7 @@ func TestMessage_ReadFrom_Errors(t *testing.T) {
 	binary.BigEndian.PutUint32(hdr[:], 5) // id(1)+payload(4) but we'll truncate
 
 	r := bytes.NewReader(
-		append(hdr[:], []byte{byte(MsgHave), 0x00, 0x00}...),
+		append(hdr[:], []byte{byte(Have), 0x00, 0x00}...),
 	) // only 3 of 4 payload bytes
 	var m Message
 	if _, err := (&m).ReadFrom(r); err == nil {

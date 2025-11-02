@@ -13,8 +13,9 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/internal/config"
+	"github.com/prxssh/rabbit/internal/piece"
 	"github.com/prxssh/rabbit/internal/protocol"
-	"github.com/prxssh/rabbit/internal/utils/bitfield"
+	"github.com/prxssh/rabbit/pkg/bitfield"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -39,12 +40,8 @@ type Peer struct {
 	startOnce     sync.Once
 	stopped       atomic.Bool
 	cancel        context.CancelFunc
-	onBitfield    func(netip.AddrPort, bitfield.Bitfield)
-	onHave        func(netip.AddrPort, int)
-	onDisconnect  func(netip.AddrPort)
-	onHandshake   func(netip.AddrPort)
-	onPiece       func(netip.AddrPort, int, int, []byte)
-	requestWork   func(netip.AddrPort)
+	workQueue     <-chan *piece.Request
+	eventQueue    chan<- any
 }
 
 // PeerStats holds per-connection counters/timestamps. All counters are
@@ -127,15 +124,11 @@ type PeerMetrics struct {
 }
 
 type PeerOpts struct {
-	Log          *slog.Logger
-	PieceCount   int
-	InfoHash     [sha1.Size]byte
-	OnBitfield   func(netip.AddrPort, bitfield.Bitfield)
-	OnHave       func(netip.AddrPort, int)
-	OnDisconnect func(netip.AddrPort)
-	OnHandshake  func(netip.AddrPort)
-	OnPiece      func(netip.AddrPort, int, int, []byte)
-	RequestWork  func(netip.AddrPort)
+	Log        *slog.Logger
+	PieceCount int
+	InfoHash   [sha1.Size]byte
+	WorkQueue  <-chan *piece.Request
+	EventQueue chan<- any
 }
 
 func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, error) {
@@ -151,22 +144,16 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *PeerOpts) (*Peer, e
 		_ = conn.Close()
 		return nil, err
 	}
-	if opts.OnHandshake != nil {
-	}
 
 	p := &Peer{
-		log:          log,
-		conn:         conn,
-		addr:         addr,
-		stats:        &PeerStats{},
-		onBitfield:   opts.OnBitfield,
-		onHave:       opts.OnHave,
-		onDisconnect: opts.OnDisconnect,
-		onHandshake:  opts.OnHandshake,
-		onPiece:      opts.OnPiece,
-		requestWork:  opts.RequestWork,
-		bitfield:     bitfield.New(opts.PieceCount),
-		outbox:       make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
+		log:        log,
+		conn:       conn,
+		addr:       addr,
+		stats:      &PeerStats{},
+		bitfield:   bitfield.New(opts.PieceCount),
+		workQueue:  opts.WorkQueue,
+		eventQueue: opts.EventQueue,
+		outbox:     make(chan *protocol.Message, config.Load().PeerOutboundQueueBacklog),
 	}
 	p.setState(maskAmChoking|maskPeerChoking, true)
 	p.lastAcitivyAt.Store(time.Now().UnixNano())
@@ -186,6 +173,7 @@ func (p *Peer) Run(ctx context.Context) error {
 	g.Go(func() error { return p.readMessagesLoop(gctx) })
 	g.Go(func() error { return p.writeMessagesLoop(gctx) })
 	g.Go(func() error { return p.downloadUploadRatesLoop(gctx) })
+	g.Go(func() error { return p.requestWorkerLoop(gctx) })
 
 	return g.Wait()
 }
@@ -292,8 +280,6 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 	l := p.log.With("component", "write messages loop")
 	l.Debug("started")
 
-	p.onHandshake(p.addr)
-
 	keepAliveInterval := config.Load().KeepAliveInterval
 	ticker := time.NewTicker(keepAliveInterval)
 	defer ticker.Stop()
@@ -399,6 +385,32 @@ func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
 	}
 }
 
+func (p *Peer) requestWorkerLoop(ctx context.Context) error {
+	l := p.log.With("component", "request worker loop")
+	l.Debug("started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case request, ok := <-p.workQueue:
+			if !ok {
+				return errors.New("work queue closed")
+			}
+
+			message := protocol.MessageRequest(
+				uint32(request.Piece),
+				uint32(request.Begin),
+				uint32(request.Length),
+			)
+			if err := p.writeMessage(message); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func (p *Peer) readMessage() (*protocol.Message, error) {
 	_ = p.conn.SetReadDeadline(time.Now().Add(config.Load().ReadTimeout))
 	defer p.conn.SetReadDeadline(time.Time{})
@@ -457,44 +469,52 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 	}
 
 	switch message.ID {
-	case protocol.MsgChoke:
+	case protocol.Choke:
 		p.setState(maskPeerChoking, true)
-	case protocol.MsgUnchoke:
+		p.eventQueue <- piece.ChokedEvent{Peer: p.addr}
+
+	case protocol.Unchoke:
 		p.setState(maskPeerChoking, false)
-		p.requestWork(p.addr)
-	case protocol.MsgInterested:
+		p.eventQueue <- piece.UnchokedEvent{Peer: p.addr}
+
+	case protocol.Interested:
 		p.setState(maskPeerInterested, true)
-	case protocol.MsgNotInterested:
+
+	case protocol.NotInterested:
 		p.setState(maskPeerInterested, false)
-	case protocol.MsgBitfield:
+
+	case protocol.Bitfield:
 		bf := bitfield.FromBytes(message.Payload)
-		p.onBitfield(p.addr, bf)
-	case protocol.MsgHave:
-		piece, ok := message.ParseHave()
+		p.eventQueue <- piece.BitfieldEvent{Peer: p.addr, Data: piece.BitfieldData{Bitfield: bf}}
+
+	case protocol.Have:
+		pieceIdx, ok := message.ParseHave()
 		if !ok {
 			return errors.New("malformed have message")
 		}
-		p.onHave(p.addr, int(piece))
+		p.eventQueue <- piece.HaveEvent{Peer: p.addr, Data: piece.HaveData{Piece: int(pieceIdx)}}
 
-	case protocol.MsgPiece:
-		piece, begin, block, ok := message.ParsePiece()
+	case protocol.Piece:
+		pieceIdx, begin, block, ok := message.ParsePiece()
 		if !ok {
 			return errors.New("malformed piece message")
 		}
 
-		p.onPiece(p.addr, int(piece), int(begin), block)
-		p.requestWork(p.addr)
+		p.eventQueue <- piece.PieceEvent{Peer: p.addr, Data: piece.PieceData{Piece: int(pieceIdx), Begin: int(begin), Data: block}}
+
 		p.stats.PiecesReceived.Add(1)
 		p.stats.Downloaded.Add(uint64(len(block)))
-	case protocol.MsgRequest:
+	case protocol.Request:
 		_, _, _, ok := message.ParseRequest()
 		if !ok {
 			return errors.New("malformed request message")
 		}
 
 		p.stats.RequestsReceived.Add(1)
-	case protocol.MsgCancel:
+
+	case protocol.Cancel:
 		p.stats.RequestsCancelled.Add(1)
+
 	default:
 		return fmt.Errorf("invalid message id '%d'", message.ID)
 	}
@@ -524,28 +544,28 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 	}
 
 	switch message.ID {
-	case protocol.MsgChoke:
+	case protocol.Choke:
 		p.setState(maskAmChoking, true)
 
-	case protocol.MsgUnchoke:
+	case protocol.Unchoke:
 		p.setState(maskAmChoking, false)
 
-	case protocol.MsgInterested:
+	case protocol.Interested:
 		p.setState(maskAmInterested, true)
 
-	case protocol.MsgNotInterested:
+	case protocol.NotInterested:
 		p.setState(maskAmInterested, false)
 
-	case protocol.MsgHave:
+	case protocol.Have:
 		// nothing to do
 
-	case protocol.MsgBitfield:
+	case protocol.Bitfield:
 		// nothing to do
 
-	case protocol.MsgRequest:
+	case protocol.Request:
 		p.stats.RequestsSent.Add(1)
 
-	case protocol.MsgPiece:
+	case protocol.Piece:
 		// Piece upload truly happened; count piece + payload bytes
 		// Payload layout: 4(index) + 4(begin) + <block>
 		if n := len(message.Payload); n >= 8 {
@@ -554,7 +574,7 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 			p.stats.Uploaded.Add(uint64(blockLen))
 		}
 
-	case protocol.MsgCancel:
+	case protocol.Cancel:
 		p.stats.RequestsCancelled.Add(1)
 
 	default:

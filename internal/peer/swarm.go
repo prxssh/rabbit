@@ -12,7 +12,7 @@ import (
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/piece"
 	"github.com/prxssh/rabbit/internal/storage"
-	"github.com/prxssh/rabbit/internal/utils/bitfield"
+	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
 type Swarm struct {
@@ -201,16 +201,13 @@ func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error)
 
 	s.stats.ConnectingPeers.Add(1)
 
+	// TODO: we need to remove workQueue if connect fails
 	peer, err := NewPeer(ctx, addr, &PeerOpts{
-		InfoHash:     s.infoHash,
-		Log:          s.log,
-		PieceCount:   s.pieceCount,
-		OnBitfield:   s.onBitfield,
-		OnHave:       s.onHave,
-		OnDisconnect: s.onDisconnect,
-		OnHandshake:  s.onPeerHandshake,
-		OnPiece:      s.onBlockReceived,
-		RequestWork:  s.requestWork,
+		InfoHash:   s.infoHash,
+		Log:        s.log,
+		PieceCount: s.pieceCount,
+		WorkQueue:  s.piecePicker.GetWorkQueue(addr),
+		EventQueue: s.piecePicker.GetEventQueue(),
 	})
 
 	s.stats.ConnectingPeers.Add(^uint32(0))

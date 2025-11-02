@@ -1,13 +1,16 @@
 package piece
 
 import (
+	"context"
 	"crypto/sha1"
+	"log/slog"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prxssh/rabbit/internal/config"
-	"github.com/prxssh/rabbit/internal/utils/bitfield"
+	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
 type Cancel struct {
@@ -55,6 +58,7 @@ func (pk *Picker) PieceStates() []PieceState {
 }
 
 type Picker struct {
+	log              *slog.Logger
 	mu               sync.RWMutex
 	LastPieceLen     int32
 	PieceCount       int
@@ -66,6 +70,11 @@ type Picker struct {
 	remainingBlocks  int
 	bitfield         bitfield.Bitfield
 	inflightRequests int
+
+	eventQueue     chan any
+	peerWorkQueues map[netip.AddrPort]chan *Request
+	workQueueMut   sync.RWMutex
+	closed         atomic.Bool
 
 	peerMu               sync.RWMutex
 	peerInflightCount    map[netip.AddrPort]int
@@ -117,6 +126,20 @@ func NewPicker(size int64, pieceLength int32, pieceHashes [][sha1.Size]byte) *Pi
 		peerInflightCount:    make(map[netip.AddrPort]int),
 		peerBitfields:        make(map[netip.AddrPort]bitfield.Bitfield),
 		peerBlockAssignments: make(map[netip.AddrPort]map[uint64]struct{}),
+		eventQueue:           make(chan any, 1000), // TODO: config
+		peerWorkQueues:       make(map[netip.AddrPort]chan *Request),
+	}
+}
+
+func (pk *Picker) Run(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case event := <-pk.eventQueue:
+			pk.handleEvent(event)
+		}
 	}
 }
 
@@ -143,6 +166,42 @@ func (pk *Picker) InterestedInPeer(addr netip.AddrPort) bool {
 		}
 	}
 	return false
+}
+
+// TODO: race condition in read then create
+func (pk *Picker) GetWorkQueue(peer netip.AddrPort) <-chan *Request {
+	pk.workQueueMut.RLock()
+	if have, ok := pk.peerWorkQueues[peer]; ok {
+		pk.workQueueMut.RUnlock()
+		return have
+	}
+	pk.workQueueMut.RUnlock()
+
+	pk.workQueueMut.Lock()
+	defer pk.workQueueMut.Unlock()
+
+	// TODO: config
+	pk.peerWorkQueues[peer] = make(chan *Request, 1000)
+	return pk.peerWorkQueues[peer]
+}
+
+func (pk *Picker) GetEventQueue() chan<- any {
+	return pk.eventQueue
+}
+
+func (pk *Picker) OnPeerHandshake(peer netip.AddrPort) {
+}
+
+func (pk *Picker) OnPeerUnchoke(peer netip.AddrPort) {
+}
+
+func (pk *Picker) OnPeerChoke(peer netip.AddrPort) {
+}
+
+func (pk *Picker) OnPiece(peer netip.AddrPort, data PieceData) {
+}
+
+func (pk *Picker) OnDisconnect(peer netip.AddrPort) {
 }
 
 func (pk *Picker) OnPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {

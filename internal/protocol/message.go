@@ -11,36 +11,36 @@ import (
 type MessageID uint8
 
 const (
-	MsgChoke         MessageID = 0
-	MsgUnchoke       MessageID = 1
-	MsgInterested    MessageID = 2
-	MsgNotInterested MessageID = 3
-	MsgHave          MessageID = 4
-	MsgBitfield      MessageID = 5
-	MsgRequest       MessageID = 6
-	MsgPiece         MessageID = 7
-	MsgCancel        MessageID = 8
+	Choke         MessageID = 0
+	Unchoke       MessageID = 1
+	Interested    MessageID = 2
+	NotInterested MessageID = 3
+	Have          MessageID = 4
+	Bitfield      MessageID = 5
+	Request       MessageID = 6
+	Piece         MessageID = 7
+	Cancel        MessageID = 8
 )
 
 func (mid MessageID) String() string {
 	switch mid {
-	case MsgChoke:
+	case Choke:
 		return "Choke"
-	case MsgUnchoke:
+	case Unchoke:
 		return "Unchoke"
-	case MsgInterested:
+	case Interested:
 		return "Interested"
-	case MsgNotInterested:
+	case NotInterested:
 		return "Not Interested"
-	case MsgHave:
+	case Have:
 		return "Have"
-	case MsgBitfield:
+	case Bitfield:
 		return "Bitfield"
-	case MsgRequest:
+	case Request:
 		return "Request"
-	case MsgPiece:
+	case Piece:
 		return "Piece"
-	case MsgCancel:
+	case Cancel:
 		return "Cancel"
 	default:
 		return fmt.Sprintf("Unknown(%d)", mid)
@@ -78,23 +78,23 @@ var (
 // By convention, a nil *Message is a keep-alive.
 func IsKeepAlive(m *Message) bool { return m == nil }
 
-func MessageChoke() *Message         { return &Message{ID: MsgChoke} }
-func MessageUnchoke() *Message       { return &Message{ID: MsgUnchoke} }
-func MessageInterested() *Message    { return &Message{ID: MsgInterested} }
-func MessageNotInterested() *Message { return &Message{ID: MsgNotInterested} }
+func MessageChoke() *Message         { return &Message{ID: Choke} }
+func MessageUnchoke() *Message       { return &Message{ID: Unchoke} }
+func MessageInterested() *Message    { return &Message{ID: Interested} }
+func MessageNotInterested() *Message { return &Message{ID: NotInterested} }
 
 func MessageHave(index uint32) *Message {
 	payload := make([]byte, 4)
 	binary.BigEndian.PutUint32(payload, uint32(index))
 
-	return &Message{ID: MsgHave, Payload: payload}
+	return &Message{ID: Have, Payload: payload}
 }
 
 func MessageBitfield(bits []byte) *Message {
 	cp := make([]byte, len(bits))
 	copy(cp, bits)
 
-	return &Message{ID: MsgBitfield, Payload: cp}
+	return &Message{ID: Bitfield, Payload: cp}
 }
 
 func MessageRequest(index, begin, length uint32) *Message {
@@ -103,7 +103,7 @@ func MessageRequest(index, begin, length uint32) *Message {
 	binary.BigEndian.PutUint32(payload[4:8], begin)
 	binary.BigEndian.PutUint32(payload[8:12], length)
 
-	return &Message{ID: MsgRequest, Payload: payload}
+	return &Message{ID: Request, Payload: payload}
 }
 
 func MessagePiece(index, begin uint32, block []byte) *Message {
@@ -112,7 +112,7 @@ func MessagePiece(index, begin uint32, block []byte) *Message {
 	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
 	copy(payload[8:], block)
 
-	return &Message{ID: MsgPiece, Payload: payload}
+	return &Message{ID: Piece, Payload: payload}
 }
 
 func MessageCancel(index, begin, length int) *Message {
@@ -121,13 +121,13 @@ func MessageCancel(index, begin, length int) *Message {
 	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
 	binary.BigEndian.PutUint32(payload[8:12], uint32(length))
 
-	return &Message{ID: MsgCancel, Payload: payload}
+	return &Message{ID: Cancel, Payload: payload}
 }
 
 // ParseHave returns the piece index for a Have message.
 // ok is false if the payload length is not exactly 4 bytes.
 func (m *Message) ParseHave() (index uint32, ok bool) {
-	if m == nil || m.ID != MsgHave || len(m.Payload) != 4 {
+	if m == nil || m.ID != Have || len(m.Payload) != 4 {
 		return 0, false
 	}
 
@@ -137,7 +137,7 @@ func (m *Message) ParseHave() (index uint32, ok bool) {
 // ParseRequest parses a Request payload into index, begin, and length.
 // ok is false if the payload length is not exactly 12 bytes.
 func (m *Message) ParseRequest() (idx, begin, length uint32, ok bool) {
-	if m == nil || m.ID != MsgRequest || len(m.Payload) != 12 {
+	if m == nil || m.ID != Request || len(m.Payload) != 12 {
 		return 0, 0, 0, false
 	}
 
@@ -150,7 +150,7 @@ func (m *Message) ParseRequest() (idx, begin, length uint32, ok bool) {
 // ParsePiece parses a Piece payload into index, begin, and the data block.
 // ok is false if there are fewer than 8 bytes of header.
 func (m *Message) ParsePiece() (idx, begin uint32, block []byte, ok bool) {
-	if m == nil || m.ID != MsgPiece || len(m.Payload) < 8 {
+	if m == nil || m.ID != Piece || len(m.Payload) < 8 {
 		return 0, 0, nil, false
 	}
 
@@ -289,15 +289,15 @@ func (m *Message) ValidatePayloadSize() error {
 	}
 
 	switch m.ID {
-	case MsgHave:
+	case Have:
 		if len(m.Payload) != 4 {
 			return ErrBadPayloadSize
 		}
-	case MsgRequest, MsgCancel:
+	case Request, Cancel:
 		if len(m.Payload) != 12 {
 			return ErrBadPayloadSize
 		}
-	case MsgPiece:
+	case Piece:
 		if len(m.Payload) < 8 {
 			return ErrBadPayloadSize
 		}
