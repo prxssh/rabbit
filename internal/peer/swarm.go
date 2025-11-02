@@ -12,7 +12,6 @@ import (
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/piece"
 	"github.com/prxssh/rabbit/internal/storage"
-	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
 type Swarm struct {
@@ -411,101 +410,5 @@ func (s *Swarm) peerRequestTimeoutLoop(ctx context.Context) error {
 				peer.SendCancel(req.Piece, req.Begin, req.Length)
 			}
 		}
-	}
-}
-
-func (s *Swarm) onPeerHandshake(addr netip.AddrPort) {
-	peer, ok := s.GetPeer(addr)
-	if !ok {
-		return
-	}
-
-	peer.SendBitfield(s.piecePicker.Bitfield())
-}
-
-func (s *Swarm) onBitfield(addr netip.AddrPort, bf bitfield.Bitfield) {
-	peer, ok := s.GetPeer(addr)
-	if !ok {
-		return
-	}
-	s.piecePicker.OnPeerBitfield(addr, bf)
-
-	// Signal interest based on availability vs our bitfield
-	if s.piecePicker.InterestedInPeer(addr) {
-		peer.SendInterested()
-	} else {
-		peer.SendNotInterested()
-	}
-
-	// Only attempt requests if the peer has unchoked us
-	if !peer.PeerChoking() {
-		for _, req := range s.piecePicker.NextForPeer(addr) {
-			peer.SendRequest(req.Piece, req.Begin, req.Length)
-		}
-	}
-}
-
-func (s *Swarm) onHave(addr netip.AddrPort, piece int) {
-	peer, ok := s.GetPeer(addr)
-	if !ok {
-		return
-	}
-	s.piecePicker.OnPeerHave(addr, piece)
-
-	// Update interest when new availability arrives
-	if s.piecePicker.InterestedInPeer(addr) {
-		peer.SendInterested()
-	} else {
-		peer.SendNotInterested()
-	}
-
-	// Only request blocks when not choked
-	if !peer.PeerChoking() {
-		for _, req := range s.piecePicker.NextForPeer(addr) {
-			peer.SendRequest(req.Piece, req.Begin, req.Length)
-		}
-	}
-}
-
-func (s *Swarm) onDisconnect(addr netip.AddrPort) {
-	s.piecePicker.OnPeerGone(addr)
-}
-
-func (s *Swarm) onBlockReceived(addr netip.AddrPort, pieceIdx, begin int, data []byte) {
-	completed := s.piecePicker.OnBlockReceived(addr, pieceIdx, begin)
-
-	pieceLen, blockLen, isLastPiece := s.piecePicker.PieceLength(pieceIdx)
-	blockIdx := piece.BlockIndexForBegin(begin, int(pieceLen), int(blockLen))
-
-	s.storage.BufferBlock(data, storage.BlockInfo{
-		PieceIndex:  pieceIdx,
-		BlockIndex:  blockIdx,
-		PieceLength: pieceLen,
-		BlockLength: blockLen,
-		IsLastPiece: isLastPiece,
-	})
-
-	if !completed {
-		return
-	}
-
-	hash := s.piecePicker.PieceHash(pieceIdx)
-	if err := s.storage.FlushPiece(pieceIdx, hash); err != nil {
-		s.log.Error("piece verification failed", "error", err.Error(), "piece", pieceIdx)
-		return
-	}
-
-	s.piecePicker.MarkPieceVerified(pieceIdx, true)
-	s.BroadcastHAVE(uint32(pieceIdx))
-}
-
-func (s *Swarm) requestWork(addr netip.AddrPort) {
-	peer, ok := s.GetPeer(addr)
-	if !ok {
-		return
-	}
-
-	for _, req := range s.piecePicker.NextForPeer(addr) {
-		peer.SendRequest(req.Piece, req.Begin, req.Length)
 	}
 }

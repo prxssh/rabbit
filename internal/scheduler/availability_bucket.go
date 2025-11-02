@@ -1,4 +1,4 @@
-package piece
+package scheduler
 
 import (
 	"math/bits"
@@ -8,7 +8,7 @@ import (
 	"github.com/prxssh/rabbit/internal/config"
 )
 
-// AvailabilityBucket efficiently tracks which pieces belong to each
+// availabilityBucket efficiently tracks which pieces belong to each
 // availability level (i.e., how many peers currently have that piece).
 //
 // It maintains O(1) updates when peers join/leave by moving piece indices
@@ -18,7 +18,8 @@ import (
 // The structure is highly cache-friendly and supports fast rarest-first
 // selection via a compact bitmap of non-empty buckets.
 type availabilityBucket struct {
-	mu sync.RWMutex
+	rng *rand.Rand
+	mu  sync.RWMutex
 
 	// buckets[a] holds a dense slice of piece indices whose availability
 	// equals 'a'. For example, buckets[3] contains all pieces that exactly
@@ -53,8 +54,6 @@ type availabilityBucket struct {
 	// This lets the picker find the smallest non-empty bucket (the rarest
 	// pieces) in O(1)–O(64) time without scanning every bucket.
 	nonEmptyBits []uint64
-
-	rng *rand.Rand
 }
 
 func newAvailabilityBucket(pieceCount int) *availabilityBucket {

@@ -2,6 +2,7 @@ package meta
 
 import (
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"time"
 
@@ -36,17 +37,17 @@ type File struct {
 }
 
 var (
-	ErrTopLevelNotDict     = fmt.Errorf("metainfo: top-level is not a dict")
-	ErrAnnounceMissing     = fmt.Errorf("metainfo: both announce and announce-list missing")
-	ErrInfoMissing         = fmt.Errorf("metainfo: 'info' missing")
-	ErrInfoNotDict         = fmt.Errorf("metainfo: 'info' is not a dict")
-	ErrNameMissing         = fmt.Errorf("metainfo: 'info' name missing")
-	ErrPieceLenMissing     = fmt.Errorf("metainfo: 'info' piece length missing")
-	ErrPieceLenNonPositive = fmt.Errorf("metainfo: 'info' piece length must be > 0")
-	ErrPiecesMissing       = fmt.Errorf("metainfo: 'info' pieces missing")
-	ErrPiecesLenInvalid    = fmt.Errorf("metainfo: 'info' pieces length not multiple of 20")
-	ErrLayoutInvalid       = fmt.Errorf("metainfo: invalid single/multi-file layout")
-	ErrCreationDateInvalid = fmt.Errorf("metainfo: invalid creation date")
+	ErrTopLevelNotDict     = errors.New("metainfo: top-level is not a dict")
+	ErrAnnounceMissing     = errors.New("metainfo: both announce and announce-list missing")
+	ErrInfoMissing         = errors.New("metainfo: 'info' missing")
+	ErrInfoNotDict         = errors.New("metainfo: 'info' is not a dict")
+	ErrNameMissing         = errors.New("metainfo: 'info' name missing")
+	ErrPieceLenMissing     = errors.New("metainfo: 'info' piece length missing")
+	ErrPieceLenNonPositive = errors.New("metainfo: 'info' piece length must be > 0")
+	ErrPiecesMissing       = errors.New("metainfo: 'info' pieces missing")
+	ErrPiecesLenInvalid    = errors.New("metainfo: 'info' pieces length not multiple of 20")
+	ErrLayoutInvalid       = errors.New("metainfo: invalid single/multi-file layout")
+	ErrCreationDateInvalid = errors.New("metainfo: invalid creation date")
 )
 
 func (m *Metainfo) Size() int64 {

@@ -1,4 +1,4 @@
-package piece
+package scheduler
 
 import (
 	"crypto/sha1"
@@ -7,8 +7,67 @@ import (
 	"time"
 )
 
-const BlockLength = 16 * 1024 // 16KiB
+// MaxBlockLength is the standard size of a data block requested from peers.
+const MaxBlockLength = 16 * 1024
 
+// PieceState provides a high-level summary of a piece's download status.
+// This is primarily intended for external use (e.g., UI, metrics).
+type PieceState int
+
+const (
+	PieceStateNotStarted PieceState = iota
+	PieceStateInProgress
+	PieceStateCompleted
+)
+
+func (s *PieceScheduler) PieceStates() []PieceState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	states := make([]PieceState, s.pieceCount)
+	for i, p := range s.pieces {
+		if p.verified {
+			states[i] = PieceStateCompleted
+		} else if p.doneBlocks > 0 {
+			states[i] = PieceStateInProgress
+		} else {
+			states[i] = PieceStateNotStarted
+		}
+	}
+
+	return states
+}
+
+// Request defines a block of data to be requested from a peer.
+type Request struct {
+	// Piece is the zero-based piece index.
+	Piece int
+
+	// Begin is the zero-based byte offset within the piece.
+	Begin int
+
+	// Length is the requested length of the block in bytes. This is typically
+	// piece.BlockLength, except for the last block.
+	Length int
+}
+
+// Cancel represents an internal command to cancel a pending block request that
+// was previously send to the specific peer.
+type Cancel struct {
+	// Peer identifies which peer the original request was sent to.
+	Peer netip.AddrPort
+
+	// Piece is the zero-based piece index.
+	Piece int
+
+	// Begin is the zeor-based byte offset within the piece.
+	Begin int
+
+	// Length is the length of the block to be cancelled.
+	Length int
+}
+
+// blockStatus represents the download state of a single block.
 type blockStatus uint8
 
 const (
@@ -17,19 +76,30 @@ const (
 	blockDone
 )
 
+// blockOwner tracks which peer an in-flight block was requested from.
 type blockOwner struct {
-	addr        netip.AddrPort
+	// peer is the address of the peer the request was sent to.
+	peer netip.AddrPort
+
+	// requestedAt is the time the request was sent, used for timeouts.
 	requestedAt time.Time
 }
 
+// block holds the dynamic state for a single block within a piece.
 type block struct {
+	// pendingRequests tracks how many active requests are out for this block.
 	pendingRequests int
-	status          blockStatus
-	owner           *blockOwner
+
+	// status is the current download state of the block (Want, Inflight, Done).
+	status blockStatus
+
+	// owner points to the peer this block was requested from. It is non-nil
+	// only when status is blockInflight.
+	owner *blockOwner
 }
 
-// pieceState describes one piece’s static metadata and dynamic progress.
-type pieceState struct {
+// piece describes one piece’s static metadata and dynamic progress.
+type piece struct {
 	// index is the zero-based piece index within the torrent.
 	index int
 
@@ -69,24 +139,29 @@ type pieceState struct {
 	blocks []*block
 }
 
-func (pk *Picker) PieceLength(piece int) (int32, int32, bool) {
-	return pk.pieces[piece].length, BlockLength, pk.pieces[piece].isLastPiece
+type PieceInfo struct {
+	Length int32
+	IsLast bool
 }
 
-func (pk *Picker) PieceHash(idx int) [sha1.Size]byte {
-	pk.mu.RLock()
-	defer pk.mu.RUnlock()
-
-	return pk.pieces[idx].sha
+func (s *PieceScheduler) PieceInfo(piece int) PieceInfo {
+	ps := s.pieces[piece]
+	return PieceInfo{Length: ps.length, IsLast: ps.isLastPiece}
 }
 
-// CurrentPieceIndex returns the first piece that is not yet verified.
-func (pk *Picker) CurrentPieceIndex() (int, bool) {
-	pk.mu.RLock()
-	defer pk.mu.RUnlock()
+func (s *PieceScheduler) PieceHash(piece int) [sha1.Size]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	for i := 0; i < pk.PieceCount; i++ {
-		if !pk.pieces[i].verified {
+	return s.pieces[piece].sha
+}
+
+func (s *PieceScheduler) FirstUnverifiedPiece() (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := 0; i < s.pieceCount; i++ {
+		if !s.pieces[i].verified {
 			return i, true
 		}
 	}
@@ -94,22 +169,25 @@ func (pk *Picker) CurrentPieceIndex() (int, bool) {
 	return 0, false
 }
 
-func (pk *Picker) MarkPieceVerified(idx int, ok bool) {
-	if idx < 0 || idx >= pk.PieceCount {
+func (s *PieceScheduler) MarkPieceVerified(piece int, ok bool) {
+	if piece < 0 || piece >= s.pieceCount {
 		return
 	}
 
-	pk.mu.Lock()
-	defer pk.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	ps := pk.pieces[idx]
+	ps := s.pieces[piece]
+	if ps.verified {
+		return
+	}
 	if ok {
 		ps.verified = true
-		pk.bitfield.Set(idx)
+		s.bitfield.Set(piece)
 
-		if pk.nextPiece == idx {
-			pk.nextPiece++
-			pk.nextBlock = 0
+		if s.nextPiece == piece {
+			s.nextPiece++
+			s.nextBlock = 0
 		}
 
 		return
@@ -118,7 +196,7 @@ func (pk *Picker) MarkPieceVerified(idx int, ok bool) {
 	// Bad hash: revert piece to WANT
 	for b := 0; b < ps.blockCount; b++ {
 		if ps.blocks[b].status == blockDone {
-			pk.remainingBlocks++
+			s.remainingBlocks++
 		}
 
 		ps.blocks[b].status = blockWant
@@ -219,21 +297,36 @@ func BlockOffsetBounds(pieceLen, blockLen int32, blockIdx int) (begin, length in
 }
 
 // BlockIndexForBegin returns the block index for a byte offset within a piece.
-func BlockIndexForBegin(begin, pieceLen, blockLen int) int {
-	if begin < 0 || begin >= pieceLen || blockLen <= 0 {
+func BlockIndexForBegin(begin, pieceLen int) int {
+	if begin < 0 || begin >= pieceLen || MaxBlockLength <= 0 {
 		return -1
 	}
-	return int(begin / blockLen)
+	return int(begin / MaxBlockLength)
 }
 
 func BlocksInPiece(pieceLen int32) int {
-	return BlockCountForPiece(pieceLen, BlockLength)
+	return BlockCountForPiece(pieceLen, MaxBlockLength)
 }
 
 func LastBlockInPiece(pieceLen int32) int32 {
-	return LastBlockLength(pieceLen, BlockLength)
+	return LastBlockLength(pieceLen, MaxBlockLength)
 }
 
 func BlockBounds(pieceLen int32, blockIdx int) (int32, int32, error) {
-	return BlockOffsetBounds(pieceLen, BlockLength, blockIdx)
+	return BlockOffsetBounds(pieceLen, MaxBlockLength, blockIdx)
+}
+
+func blockKey(piece, begin int) uint64 {
+	return uint64(piece)<<32 | uint64(begin)
+}
+
+func blockInfo(piece *piece, blockIdx int) (begin, length int) {
+	begin = blockIdx * MaxBlockLength
+	length = MaxBlockLength
+
+	if blockIdx == piece.blockCount-1 && piece.lastBlock > 0 {
+		length = int(piece.lastBlock)
+	}
+
+	return
 }
