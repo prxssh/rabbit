@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/pkg/bitfield"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -274,44 +273,6 @@ func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *PieceRequ
 
 func (s *PieceScheduler) GetEventQueue() chan<- Event {
 	return s.eventQueue
-}
-
-func (s *PieceScheduler) OnBlockReceived(peer netip.AddrPort, piece, begin int) bool {
-	if piece < 0 || piece >= s.pieceCount {
-		return false
-	}
-
-	s.unassignBlockFromPeer(peer, piece, begin)
-
-	s.mut.Lock()
-	defer s.mut.Unlock()
-
-	ps := s.pieces[piece]
-	blockIdx := BlockIndexForBegin(begin, int(ps.length))
-	if blockIdx < 0 || blockIdx >= ps.blockCount {
-		return false
-	}
-
-	blk := ps.blocks[blockIdx]
-	if blk.status == blockInflight {
-		ps.doneBlocks++
-		blk.status = blockDone
-		blk.pendingRequests = 0
-
-		if s.inflightRequests > 0 {
-			s.inflightRequests--
-		}
-
-		if s.remainingBlocks > 0 {
-			s.remainingBlocks--
-		}
-	}
-
-	if s.remainingBlocks <= config.Load().EndgameThreshold {
-		s.endgame = true
-	}
-
-	return ps.doneBlocks == ps.blockCount
 }
 
 func (s *PieceScheduler) findAvailableBlock(piece *piece) (int, bool) {
