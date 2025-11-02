@@ -189,7 +189,6 @@ func (s *PieceScheduler) onPeerGone(peer netip.AddrPort) {
 		piece := s.pieces[pieceIdx]
 		blockIdx := BlockIndexForBegin(begin, int(piece.length))
 		s.resetBlockToWant(pieceIdx, blockIdx)
-		s.mut.Unlock()
 	}
 
 	s.updatePieceAvailability(peerBF, -1)

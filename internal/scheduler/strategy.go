@@ -41,7 +41,7 @@ func (s *PieceScheduler) nextForPeer(peer netip.AddrPort) {
 				continue
 			}
 
-			s.assignBlockToPeer(peer, i, j)
+			s.assignBlockToPeer(ps, i, j)
 			capacity--
 
 			if capacity == 0 {
@@ -106,7 +106,7 @@ func (s *PieceScheduler) selectSequential(peer *peerState, n int) {
 
 	piece := s.pieces[s.nextPiece]
 
-	for bi := s.nextBlock; bi < p.blockCount && n > 0; bi++ {
+	for bi := s.nextBlock; bi < piece.blockCount && n > 0; bi++ {
 		if piece.blocks[bi].status != blockWant {
 			continue
 		}
