@@ -14,42 +14,37 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+type WorkItemType int
+
+const (
+	WorkRequestPiece WorkItemType = iota
+	WorkCancelPiece
+	WorkSendInterested
+	WorkSendNotInterested
+	WorkSendHave
+	WorkSendBitfield
+)
+
+type WorkItem struct {
+	Type WorkItemType
+
+	Piece  int
+	Begin  int
+	Length int
+
+	Bitfield bitfield.Bitfield
+}
+
 type Config struct {
-	DownloadDir string
-
-	// DownloadStrategy chooses how to rank eligible pieces.
-	DownloadStrategy DownloadStrategy
-
-	// MaxInflightRequestsPerPeer limits how many requests can be outstanding
-	// to a single peer at once.
+	DownloadDir                string
+	DownloadStrategy           DownloadStrategy
 	MaxInflightRequestsPerPeer int
-
-	// MinInflightRequestsPerPeer is a soft floor so slow/latent peers still
-	// make progress (1–4 is typical). The controller will never drop below
-	// this.
 	MinInflightRequestsPerPeer int
-
-	// RequestQueueTime is the target amount of data (in seconds) to keep
-	// pipelined per peer (libtorrent: request_queue_time). The controller
-	// sizes the per-peer window ≈ ceil((peer_rate * RTT * RequestQueueTime)/block_size),
-	// clamped to [MinInflightRequestsPerPeer, MaxInflightRequestsPerPeer].
-	RequestQueueTimeout time.Duration
-
-	// RequestTimeout is the baseline time after which an in-flight block
-	// can be considered timed-out and re-assigned. You can adapt it
-	// per-peer using RTT.
-	RequestTimeout time.Duration
-
-	// EndgameDuplicatePerBlock, when Endgame is enabled, caps the number of
-	// duplicate owners (peers concurrently fetching the same block).
-	EndgameDuplicatePerBlock int
-
-	// EndgameThreshold decides when to enter endgame based on remaining blocks.
-	EndgameThreshold int
-
-	// maxRequestBacklog is the maximum requests that the per-peer work queue
-	// can have.
-	maxRequestBacklog int
+	RequestQueueTimeout        time.Duration
+	RequestTimeout             time.Duration
+	EndgameDuplicatePerBlock   int
+	EndgameThreshold           int
+	maxRequestBacklog          int
 }
 
 func WithDefaultConfig() *Config {
@@ -86,7 +81,7 @@ func getDefaultDownloadDir() string {
 type peerState struct {
 	inflight         int
 	choked           bool
-	workQueue        chan *PieceRequest
+	workQueue        chan *WorkItem
 	addr             netip.AddrPort
 	bitfield         bitfield.Bitfield
 	blockAssignments map[uint64]struct{}
@@ -97,7 +92,7 @@ func newPeerState(addr netip.AddrPort, pieceCount, workQueueSize int) *peerState
 		addr:             addr,
 		bitfield:         bitfield.New(pieceCount),
 		blockAssignments: make(map[uint64]struct{}),
-		workQueue:        make(chan *PieceRequest, workQueueSize),
+		workQueue:        make(chan *WorkItem, workQueueSize),
 	}
 }
 
@@ -251,7 +246,7 @@ func (s *PieceScheduler) Bitfield() bitfield.Bitfield {
 	return s.bitfield
 }
 
-func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *PieceRequest {
+func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *WorkItem {
 	s.peerStateMut.RLock()
 	if peerState, ok := s.peerState[peer]; ok {
 		s.peerStateMut.RUnlock()
@@ -323,10 +318,13 @@ func (s *PieceScheduler) assignBlockToPeer(peer *peerState, pieceIdx, blockIdx i
 	s.inflightRequests++
 	s.remainingBlocks--
 
-	req := &PieceRequest{Piece: pieceIdx, Begin: int(begin), Length: int(length)}
-
 	select {
-	case peer.workQueue <- req:
+	case peer.workQueue <- &WorkItem{
+		Type:   WorkRequestPiece,
+		Piece:  pieceIdx,
+		Begin:  int(begin),
+		Length: int(length),
+	}:
 
 	default:
 		s.log.Warn("work queue full, dropping request", "peer", peer.addr)

@@ -12,7 +12,6 @@ import (
 
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/meta"
-	"github.com/prxssh/rabbit/internal/piece"
 )
 
 func TestMain(m *testing.M) {

@@ -35,19 +35,6 @@ func (s *PieceScheduler) PieceStates() []PieceState {
 	return states
 }
 
-type PieceRequest struct {
-	Piece  int
-	Begin  int
-	Length int
-}
-
-type PieceCancel struct {
-	Peer   netip.AddrPort
-	Piece  int
-	Begin  int
-	Length int
-}
-
 type blockStatus uint8
 
 const (

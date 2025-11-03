@@ -11,7 +11,6 @@ import (
 
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/meta"
-	"github.com/prxssh/rabbit/internal/piece"
 )
 
 // Datafile is a file on disk that belongs to a torrent.

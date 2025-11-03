@@ -6,10 +6,10 @@ import (
 	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
-type PeerEventType int
+type peerEventType int
 
 const (
-	EventPeerUnchoked PeerEventType = iota
+	EventPeerUnchoked peerEventType = iota
 	EventPeerChoked
 	EventPeerBitfield
 	EventPeerHave
@@ -17,11 +17,7 @@ const (
 	EventPeerGone
 )
 
-// Event is a "marker interface" for all peer events. It allows different
-// PeerEvent[T] instantiations to be sent on the same, strongly-typed channel.
 type Event interface {
-	// isEvent is an unexported "marker" method. This ensures only types in
-	// this package can implement the Event interface.
 	isEvent()
 }
 
@@ -30,31 +26,7 @@ type PeerEvent[T any] struct {
 	Data T
 }
 
-// isEvent implements the Event interface for PeerEvent[T]. Because this method
-// is defined on the generic type, all instantiations of PeerEvent[T] (like
-// BitfieldEvent, HaveEvent, etc.) automatically satisfy the Event interface.
 func (e PeerEvent[T]) isEvent() {}
-
-type (
-	UnchokedData  struct{}
-	ChokedData    struct{}
-	PeerGoneData  struct{}
-	HandshakeData struct{}
-)
-
-type BitfieldData struct {
-	Bitfield bitfield.Bitfield
-}
-
-type HaveData struct {
-	Piece int
-}
-
-type PieceData struct {
-	Piece int
-	Begin int
-	Data  []byte
-}
 
 type (
 	HandshakeEvent = PeerEvent[HandshakeData]
@@ -63,13 +35,76 @@ type (
 	UnchokedEvent  = PeerEvent[UnchokedData]
 	ChokedEvent    = PeerEvent[ChokedData]
 	PieceEvent     = PeerEvent[PieceData]
-	GoneEvent      = PeerEvent[PeerGoneData]
+	PeerGoneEvent  = PeerEvent[PeerGoneData]
 )
+
+type (
+	UnchokedData  struct{}
+	ChokedData    struct{}
+	PeerGoneData  struct{}
+	HandshakeData struct{}
+)
+
+func NewChokedEvent(addr netip.AddrPort) ChokedEvent {
+	return PeerEvent[ChokedData]{
+		Peer: addr,
+		Data: ChokedData{},
+	}
+}
+
+func NewUnchokedEvent(addr netip.AddrPort) UnchokedEvent {
+	return PeerEvent[UnchokedData]{
+		Peer: addr,
+		Data: UnchokedData{},
+	}
+}
+
+func NewPeerGoneEvent(addr netip.AddrPort) PeerGoneEvent {
+	return PeerEvent[PeerGoneData]{
+		Peer: addr,
+		Data: PeerGoneData{},
+	}
+}
+
+type BitfieldData struct {
+	bf bitfield.Bitfield
+}
+
+func NewBitfieldEvent(addr netip.AddrPort, bf bitfield.Bitfield) BitfieldEvent {
+	return PeerEvent[BitfieldData]{
+		Peer: addr,
+		Data: BitfieldData{bf: bf},
+	}
+}
+
+type HaveData struct {
+	Piece int
+}
+
+func NewHaveEvent(addr netip.AddrPort, piece uint32) HaveEvent {
+	return PeerEvent[HaveData]{
+		Peer: addr,
+		Data: HaveData{Piece: int(piece)},
+	}
+}
+
+type PieceData struct {
+	Piece int
+	Begin int
+	Data  []byte
+}
+
+func NewPieceEvent(addr netip.AddrPort, piece, begin uint32, data []byte) PieceEvent {
+	return PeerEvent[PieceData]{
+		Peer: addr,
+		Data: PieceData{Piece: int(piece), Begin: int(begin), Data: data},
+	}
+}
 
 func (s *PieceScheduler) handleEvent(event Event) {
 	switch e := event.(type) {
 	case BitfieldEvent:
-		s.onPeerBitfield(e.Peer, e.Data.Bitfield)
+		s.onPeerBitfield(e.Peer, e.Data.bf)
 	case HaveEvent:
 		s.onPeerHave(e.Peer, e.Data.Piece)
 	case UnchokedEvent:
@@ -78,7 +113,7 @@ func (s *PieceScheduler) handleEvent(event Event) {
 		s.onPeerChoke(e.Peer)
 	case PieceEvent:
 		s.onPiece(e.Peer, e.Data)
-	case GoneEvent:
+	case PeerGoneEvent:
 		s.onPeerGone(e.Peer)
 	default:
 		s.log.Warn("unknown event type", "event", e)

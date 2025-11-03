@@ -10,23 +10,79 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/internal/config"
-	"github.com/prxssh/rabbit/internal/piece"
+	"github.com/prxssh/rabbit/internal/scheduler"
 	"github.com/prxssh/rabbit/internal/storage"
 )
 
+type Config struct {
+	// ReadTimeout is the maximum time to wait for data from a peer before
+	// considering the connection stalled.
+	ReadTimeout time.Duration
+
+	// WriteTimeout is the maximum time to wait when sending data to a peer
+	// before considering the connection stalled.
+	WriteTimeout time.Duration
+
+	// DialTimeout is the maximum time to wait when establishing a new
+	// connection to a peer.
+	DialTimeout time.Duration
+
+	// MaxPeers is the maximum number of concurrent peer connections
+	// allowed.
+	MaxPeers int
+
+	// UploadSlots is the number of regular unchoke slots.
+	UploadSlots int
+
+	// RechokeInterval is the duration of how often to reevalute choke/unchoke
+	// decisions.
+	RechokeInterval time.Duration
+
+	// OptimisticUnchokeInterval is the duration of how often to rotate the
+	// optimistic unchoke.
+	OptimisticUnchokeInterval time.Duration
+
+	// PeerHeartbeatInterval is how often to send keep-alive messages to
+	// peer to maintain the connection.
+	PeerHeartbeatInterval time.Duration
+
+	// PeerInactivityDuration is the minimum interval after which a peer connection
+	// is considered inactive.
+	PeerInactivityDuration time.Duration
+
+	// PeerOutboxBacklog is the maximum messages that peer can have in its buffer to write.
+	PeerOutboxBacklog int
+}
+
+func WithDefaultConfig() Config {
+	return Config{
+		UploadSlots:               4,
+		MaxPeers:                  50,
+		ReadTimeout:               45 * time.Second,
+		WriteTimeout:              30 * time.Second,
+		DialTimeout:               45 * time.Second,
+		RechokeInterval:           10 * time.Second,
+		OptimisticUnchokeInterval: 30 * time.Second,
+		PeerHeartbeatInterval:     45 * time.Second,
+		PeerInactivityDuration:    2 * time.Minute,
+		PeerOutboxBacklog:         50,
+	}
+}
+
 type Swarm struct {
+	cfg             *Config
+	log             *slog.Logger
+	pieceCount      int
 	peerMu          sync.RWMutex
 	peers           map[netip.AddrPort]*Peer
 	admitPeerCh     chan netip.AddrPort
-	log             *slog.Logger
 	infoHash        [sha1.Size]byte
-	pieceCount      int
 	stats           *SwarmStats
 	cancel          context.CancelFunc
 	closeOnce       sync.Once
 	closed          atomic.Bool
 	storage         *storage.Store
-	piecePicker     *piece.Picker
+	scheduler       *scheduler.PieceScheduler
 	refillPeersHook func()
 }
 
@@ -45,12 +101,12 @@ type SwarmStats struct {
 	UploadRate      atomic.Uint64 // B/s aggregate across peeres
 }
 
-type SwarmOpts struct {
-	Log         *slog.Logger
-	PieceCount  int
-	InfoHash    [sha1.Size]byte
-	Storage     *storage.Store
-	PiecePicker *piece.Picker
+type Opts struct {
+	Config     *Config
+	PieceCount int
+	Log        *slog.Logger
+	InfoHash   [sha1.Size]byte
+	Scheduler  *scheduler.PieceScheduler
 }
 
 type SwarmMetrics struct {
@@ -71,29 +127,24 @@ type SwarmMetrics struct {
 // PieceStates returns the current state of each piece as integer codes:
 // 0 = NotStarted, 1 = InProgress, 2 = Completed.
 func (s *Swarm) PieceStates() []int {
-	if s.piecePicker == nil {
-		return nil
-	}
-	states := s.piecePicker.PieceStates()
+	states := s.scheduler.PieceStates()
 	out := make([]int, len(states))
+
 	for i, st := range states {
 		out[i] = int(st)
 	}
 	return out
 }
 
-func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
-	cfg := config.Load()
-
+func NewSwarm(opts *Opts) (*Swarm, error) {
 	return &Swarm{
 		infoHash:    opts.InfoHash,
 		pieceCount:  opts.PieceCount,
 		stats:       &SwarmStats{},
-		storage:     opts.Storage,
-		piecePicker: opts.PiecePicker,
+		scheduler:   opts.Scheduler,
 		peers:       make(map[netip.AddrPort]*Peer),
-		admitPeerCh: make(chan netip.AddrPort, cfg.MaxPeers),
-		log:         opts.Log.With("src", "swarm"),
+		admitPeerCh: make(chan netip.AddrPort, opts.Config.MaxPeers),
+		log:         opts.Log.With("src", "peer_swarm"),
 	}, nil
 }
 
@@ -111,7 +162,6 @@ func (s *Swarm) Run(ctx context.Context) error {
 	wg.Go(func() { s.maintenanceLoop(ctx) })
 	wg.Go(func() { s.admitPeersLoop(ctx) })
 	wg.Go(func() { s.statsLoop(ctx) })
-	wg.Go(func() { s.peerRequestTimeoutLoop(ctx) })
 	wg.Wait()
 
 	return nil
@@ -174,14 +224,6 @@ func (s *Swarm) AdmitPeers(addrs []netip.AddrPort) {
 	}
 }
 
-func (s *Swarm) BroadcastHAVE(piece uint32) {
-	s.peerMu.RLock()
-	for _, peer := range s.peers {
-		peer.SendHave(piece)
-	}
-	s.peerMu.RUnlock()
-}
-
 func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error) {
 	if s.closed.Load() {
 		return nil, nil
@@ -189,24 +231,24 @@ func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error)
 
 	s.peerMu.RLock()
 	_, dup := s.peers[addr]
+	totalPeers := len(s.peers)
 	s.peerMu.RUnlock()
 	if dup {
 		return nil, nil
 	}
 
-	if s.stats.TotalPeers.Load() >= uint32(config.Load().MaxPeers) {
+	if totalPeers >= s.cfg.MaxPeers {
 		return nil, nil
 	}
 
 	s.stats.ConnectingPeers.Add(1)
 
-	// TODO: we need to remove workQueue if connect fails
-	peer, err := NewPeer(ctx, addr, &PeerOpts{
-		InfoHash:   s.infoHash,
-		Log:        s.log,
-		PieceCount: s.pieceCount,
-		WorkQueue:  s.piecePicker.GetWorkQueue(addr),
-		EventQueue: s.piecePicker.GetEventQueue(),
+	// TODO: cleanup queue when peer connection fails
+	peer, err := NewPeer(ctx, addr, &peerOpts{
+		infoHash:   s.infoHash,
+		log:        s.log,
+		eventQueue: s.scheduler.GetEventQueue(),
+		workQueue:  s.scheduler.GetPeerWorkQueue(addr),
 	})
 
 	s.stats.ConnectingPeers.Add(^uint32(0))
@@ -380,35 +422,6 @@ func (s *Swarm) statsLoop(ctx context.Context) error {
 			s.stats.InterestedPeers.Store(interested)
 			s.stats.UploadingTo.Store(uploadingTo)
 			s.stats.DownloadingFrom.Store(downloadingFrom)
-		}
-	}
-}
-
-func (s *Swarm) peerRequestTimeoutLoop(ctx context.Context) error {
-	l := s.log.With("component", "peer request timeout loop")
-	l.Debug("started")
-
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			l.Warn("context done, exiting", "error", ctx.Err())
-			return nil
-
-		case <-ticker.C:
-			timedOutRequests := s.piecePicker.CheckTimeouts()
-
-			for _, req := range timedOutRequests {
-				peer, ok := s.GetPeer(req.Peer)
-				if !ok {
-					continue
-				}
-
-				l.Error("piece timed out, cancelling", "piece", req.Piece)
-				peer.SendCancel(req.Piece, req.Begin, req.Length)
-			}
 		}
 	}
 }

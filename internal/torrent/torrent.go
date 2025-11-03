@@ -8,7 +8,6 @@ import (
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/meta"
 	"github.com/prxssh/rabbit/internal/peer"
-	"github.com/prxssh/rabbit/internal/piece"
 	"github.com/prxssh/rabbit/internal/storage"
 	"github.com/prxssh/rabbit/internal/tracker"
 	"golang.org/x/sync/errgroup"
