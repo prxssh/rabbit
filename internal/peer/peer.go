@@ -196,9 +196,9 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 			}
 
 		case <-heartbeatTicker.C:
-			lastAcitivyAt := time.Unix(0, p.lastActivityNs.Load())
+			lastActivityAt := time.Unix(0, p.lastActivityNs.Load())
 
-			if time.Since(lastAcitivyAt) >= p.cfg.PeerHeartbeatInterval {
+			if time.Since(lastActivityAt) >= p.cfg.PeerHeartbeatInterval {
 				p.messageOutbox <- nil
 			}
 		}
@@ -308,7 +308,7 @@ func (p *Peer) requestWorkerLoop(ctx context.Context) error {
 			case scheduler.WorkSendNotInterested:
 				message = protocol.MessageNotInterested()
 			case scheduler.WorkSendInterested:
-				message = protocol.MessageNotInterested()
+				message = protocol.MessageInterested()
 			}
 
 			p.messageOutbox <- message
