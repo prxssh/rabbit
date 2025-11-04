@@ -8,6 +8,7 @@ import (
 	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/meta"
 	"github.com/prxssh/rabbit/internal/peer"
+	"github.com/prxssh/rabbit/internal/scheduler"
 	"github.com/prxssh/rabbit/internal/storage"
 	"github.com/prxssh/rabbit/internal/tracker"
 	"golang.org/x/sync/errgroup"
@@ -18,6 +19,7 @@ type Torrent struct {
 	Metainfo    *meta.Metainfo `json:"metainfo"`
 	tracker     *tracker.Tracker
 	peerManager *peer.Swarm
+	storage     *storage.Store
 	cancel      context.CancelFunc
 	stopOnce    sync.Once
 	log         *slog.Logger
@@ -36,27 +38,27 @@ func NewTorrent(data []byte) (*Torrent, error) {
 		log:      slog.Default().With("torrent", metainfo.Info.Name),
 	}
 
-	storage, err := storage.NewStore(
-		metainfo.Info.Name,
-		metainfo.Info.Files,
-		metainfo.Info.PieceLength,
-		torrent.log,
-	)
+	storage, err := storage.NewStorage(metainfo, nil, torrent.log)
 	if err != nil {
 		return nil, err
 	}
-	piecePicker := piece.NewPicker(
-		torrent.Size,
-		metainfo.Info.PieceLength,
-		metainfo.Info.Pieces,
-	)
+	torrent.storage = storage
+
+	scheduler, err := scheduler.NewPieceScheduler(&scheduler.Opts{
+		Config:           scheduler.WithDefaultConfig(),
+		Log:              torrent.log,
+		TotalSize:        torrent.Size,
+		PieceHashes:      metainfo.Info.Pieces,
+		PieceLength:      metainfo.Info.PieceLength,
+		PieceQueue:       storage.PieceQueue,
+		PieceResultQueue: storage.PieceResultQueue,
+	})
 
 	peerManager, err := peer.NewSwarm(&peer.SwarmOpts{
-		Log:         torrent.log,
-		Storage:     storage,
-		PiecePicker: piecePicker,
-		InfoHash:    metainfo.InfoHash,
-		PieceCount:  len(metainfo.Info.Pieces),
+		Log:        torrent.log,
+		Scheduler:  scheduler,
+		InfoHash:   metainfo.InfoHash,
+		PieceCount: len(metainfo.Info.Pieces),
 	})
 	if err != nil {
 		return nil, err

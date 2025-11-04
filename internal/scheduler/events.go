@@ -4,6 +4,7 @@ import (
 	"net/netip"
 
 	"github.com/prxssh/rabbit/pkg/bitfield"
+	"github.com/prxssh/rabbit/pkg/pieceutil"
 )
 
 type peerEventType int
@@ -211,7 +212,48 @@ func (s *PieceScheduler) onPeerUnchoke(peer netip.AddrPort) {
 	ps.choked = false
 }
 
+type BlockData struct {
+	PieceIdx int
+	BlockIdx int
+	PieceLen int
+	Data     []byte
+}
+
 func (s *PieceScheduler) onPiece(peer netip.AddrPort, p PieceData) {
+	ok := func() bool {
+		s.peerStateMut.Lock()
+		defer s.peerStateMut.Unlock()
+
+		ps, ok := s.peerState[peer]
+		if !ok {
+			s.log.Warn("peer not found", "peer", peer)
+			return false
+		}
+
+		ps.inflight--
+		key := blockKey(p.Piece, p.Begin)
+		delete(ps.blockAssignments, key)
+
+		return true
+	}()
+
+	if !ok {
+		return
+	}
+
+	piece := s.pieces[p.Piece]
+
+	pieceLen := piece.length
+	if piece.isLastPiece {
+		pieceLen = pieceutil.LastPieceLength(s.totalSize, pieceLen)
+	}
+
+	s.pieceQueue <- &BlockData{
+		PieceIdx: piece.index,
+		PieceLen: int(pieceLen),
+		BlockIdx: pieceutil.BlockIndexForBegin(p.Begin, int(piece.length)),
+		Data:     p.Data,
+	}
 }
 
 func (s *PieceScheduler) onPeerGone(peer netip.AddrPort) {
@@ -244,7 +286,7 @@ func (s *PieceScheduler) onPeerGone(peer netip.AddrPort) {
 		begin := int(key & 0xFFFFFFFF)
 
 		piece := s.pieces[pieceIdx]
-		blockIdx := BlockIndexForBegin(begin, int(piece.length))
+		blockIdx := pieceutil.BlockIndexForBegin(begin, int(piece.length))
 		s.resetBlockToWant(pieceIdx, blockIdx)
 	}
 

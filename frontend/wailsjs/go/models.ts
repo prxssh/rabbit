@@ -203,7 +203,7 @@ export namespace peer {
 	    LastActive: any;
 	    // Go type: time
 	    ConnectedAt: any;
-	    ConnectedFor: number;
+	    ConnectedForNs: number;
 	    DownloadRate: number;
 	    UploadRate: number;
 	    IsChoked: boolean;
@@ -223,7 +223,7 @@ export namespace peer {
 	        this.BlocksFailed = source["BlocksFailed"];
 	        this.LastActive = this.convertValues(source["LastActive"], null);
 	        this.ConnectedAt = this.convertValues(source["ConnectedAt"], null);
-	        this.ConnectedFor = source["ConnectedFor"];
+	        this.ConnectedForNs = source["ConnectedForNs"];
 	        this.DownloadRate = source["DownloadRate"];
 	        this.UploadRate = source["UploadRate"];
 	        this.IsChoked = source["IsChoked"];

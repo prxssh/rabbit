@@ -5,14 +5,17 @@ import (
 	"crypto/sha1"
 	"log/slog"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/prxssh/rabbit/pkg/bitfield"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/prxssh/rabbit/pkg/pieceutil"
 )
+
+type PieceResult struct {
+	Piece   int
+	Success bool
+}
 
 type WorkItemType int
 
@@ -37,7 +40,6 @@ type WorkItem struct {
 }
 
 type Config struct {
-	DownloadDir                string
 	DownloadStrategy           DownloadStrategy
 	MaxInflightRequestsPerPeer int
 	MinInflightRequestsPerPeer int
@@ -50,32 +52,12 @@ type Config struct {
 
 func WithDefaultConfig() *Config {
 	return &Config{
-		DownloadDir:                getDefaultDownloadDir(),
 		MaxInflightRequestsPerPeer: 32,
 		MinInflightRequestsPerPeer: 4,
 		RequestQueueTimeout:        3 * time.Second,
 		RequestTimeout:             25 * time.Second,
 		EndgameDuplicatePerBlock:   5,
 		EndgameThreshold:           30,
-	}
-}
-
-func getDefaultDownloadDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		if cwd, err := os.Getwd(); err == nil {
-			return filepath.Join(cwd, "downloads")
-		}
-		return "./downloads"
-	}
-
-	switch runtime.Environment(context.Background()).Platform {
-	case "windows":
-		return filepath.Join(home, "Downloads", "rabbit")
-	case "darwin":
-		return filepath.Join(home, "Downloads", "rabbit")
-	default: // linux, bsd, etc.
-		return filepath.Join(home, ".local", "share", "rabbit", "downloads")
 	}
 }
 
@@ -111,6 +93,8 @@ type PieceScheduler struct {
 	mut sync.RWMutex
 	// lastPieceLen is the byte length of the final piece (which may be shorter).
 	lastPieceLen int32
+
+	totalSize int64
 
 	// pieceCount is the total number of pieces in the torrent.
 	pieceCount int
@@ -152,17 +136,22 @@ type PieceScheduler struct {
 	// peerState tracks the state of all currently connected peers, keyed by their
 	// network address.
 	peerState map[netip.AddrPort]*peerState
+
+	pieceQueue       chan<- *BlockData
+	pieceResultQueue <-chan *PieceResult
 }
 
 type Opts struct {
-	Config      *Config
-	Log         *slog.Logger
-	PieceHashes [][sha1.Size]byte
-	PieceLength int32
-	TotalSize   int64
+	Config           *Config
+	Log              *slog.Logger
+	PieceHashes      [][sha1.Size]byte
+	PieceLength      int32
+	TotalSize        int64
+	PieceQueue       chan<- *BlockData
+	PieceResultQueue <-chan *PieceResult
 }
 
-func NewPieceScheduler(opts Opts) (*PieceScheduler, error) {
+func NewPieceScheduler(opts *Opts) (*PieceScheduler, error) {
 	if opts.Config == nil {
 		opts.Config = WithDefaultConfig()
 	}
@@ -171,12 +160,12 @@ func NewPieceScheduler(opts Opts) (*PieceScheduler, error) {
 	availability := newAvailabilityBucket(n)
 
 	totalBlocks := 0
-	lastPieceLen := LastPieceLength(opts.TotalSize, opts.PieceLength)
+	lastPieceLen := pieceutil.LastPieceLength(opts.TotalSize, opts.PieceLength)
 	pieces := make([]*piece, n)
 
 	for i := 0; i < n; i++ {
-		plen, _ := PieceLengthAt(i, opts.TotalSize, opts.PieceLength)
-		blockCount := BlocksInPiece(plen)
+		plen, _ := pieceutil.PieceLengthAt(i, opts.TotalSize, opts.PieceLength)
+		blockCount := pieceutil.BlocksInPiece(plen)
 		totalBlocks += blockCount
 		blocks := make([]*block, blockCount)
 
@@ -193,7 +182,7 @@ func NewPieceScheduler(opts Opts) (*PieceScheduler, error) {
 			isLastPiece: i == n-1,
 			blockCount:  blockCount,
 			sha:         opts.PieceHashes[i],
-			lastBlock:   LastBlockInPiece(plen),
+			lastBlock:   pieceutil.LastBlockInPiece(plen),
 		}
 	}
 
@@ -203,12 +192,14 @@ func NewPieceScheduler(opts Opts) (*PieceScheduler, error) {
 		pieceCount:      n,
 		endgame:         false,
 		pieces:          pieces,
+		totalSize:       opts.TotalSize,
 		remainingBlocks: totalBlocks,
 		cfg:             opts.Config,
 		availability:    availability,
 		lastPieceLen:    lastPieceLen,
 		bitfield:        bitfield.New(n),
 		eventQueue:      make(chan Event, 1000),
+		pieceQueue:      opts.PieceQueue,
 		peerState:       make(map[netip.AddrPort]*peerState),
 		log:             opts.Log.With("component", "scheduler"),
 	}, nil
@@ -233,6 +224,14 @@ func (s *PieceScheduler) Run(ctx context.Context) error {
 			}
 
 			s.handleEvent(event)
+
+		case result, ok := <-s.pieceResultQueue:
+			if !ok {
+				s.log.Debug("piece result queue closed")
+				return nil
+			}
+
+			s.handlePieceResult(result)
 
 		case <-ticker.C:
 			s.findWorkForIdlePeers()
@@ -300,7 +299,7 @@ func (s *PieceScheduler) assignBlockToPeer(peer *peerState, pieceIdx, blockIdx i
 	piece := s.pieces[pieceIdx]
 	block := piece.blocks[blockIdx]
 
-	begin, length, err := BlockBounds(piece.length, blockIdx)
+	begin, length, err := pieceutil.BlockBounds(piece.length, blockIdx)
 	if err != nil {
 		s.log.Error("invalid block bounds", "piece", pieceIdx, "block", blockIdx)
 		return
@@ -411,5 +410,36 @@ func (s *PieceScheduler) findWorkForIdlePeers() {
 
 	for _, addr := range candidates {
 		s.nextForPeer(addr)
+	}
+}
+
+func (s *PieceScheduler) handlePieceResult(result *PieceResult) {
+	s.log.Debug("Received piece result", "piece", result.Piece, "success", result.Success)
+
+	s.markPieceVerified(result.Piece, result.Success)
+
+	if result.Success {
+		s.broadcastHave(result.Piece)
+	}
+}
+
+func (s *PieceScheduler) broadcastHave(piece int) {
+	s.log.Debug("Broadcasting HAVE message", "piece", piece)
+
+	s.peerStateMut.RLock()
+	defer s.peerStateMut.RUnlock()
+
+	for _, ps := range s.peerState {
+		if !ps.bitfield.Has(piece) {
+			select {
+			case ps.workQueue <- &WorkItem{Type: WorkSendHave, Piece: piece}:
+			default:
+				s.log.Warn(
+					"work queue full, dropping HAVE message",
+					"peer", ps.addr,
+					"piece", piece,
+				)
+			}
+		}
 	}
 }

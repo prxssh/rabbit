@@ -101,7 +101,7 @@ type SwarmStats struct {
 	UploadRate      atomic.Uint64 // B/s aggregate across peeres
 }
 
-type Opts struct {
+type SwarmOpts struct {
 	Config     *Config
 	PieceCount int
 	Log        *slog.Logger
@@ -136,7 +136,7 @@ func (s *Swarm) PieceStates() []int {
 	return out
 }
 
-func NewSwarm(opts *Opts) (*Swarm, error) {
+func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	return &Swarm{
 		infoHash:    opts.InfoHash,
 		pieceCount:  opts.PieceCount,
@@ -233,6 +233,7 @@ func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error)
 	_, dup := s.peers[addr]
 	totalPeers := len(s.peers)
 	s.peerMu.RUnlock()
+
 	if dup {
 		return nil, nil
 	}

@@ -354,7 +354,11 @@ func (p *Peer) requestWorkerLoop(ctx context.Context) error {
 			case scheduler.WorkSendInterested:
 				message = protocol.MessageInterested()
 			case scheduler.WorkCancelPiece:
-				message = protocol.MessageCancel(work.Piece, work.Begin, work.Length)
+				message = protocol.MessageCancel(
+					work.Piece,
+					work.Begin,
+					work.Length,
+				)
 			}
 
 			p.pushMessage(ctx, message)
