@@ -23,6 +23,7 @@ const (
 	WorkSendNotInterested
 	WorkSendHave
 	WorkSendBitfield
+	WorkSendCancel
 )
 
 type WorkItem struct {

@@ -15,6 +15,7 @@ import (
 	"github.com/prxssh/rabbit/internal/protocol"
 	"github.com/prxssh/rabbit/internal/scheduler"
 	"github.com/prxssh/rabbit/pkg/bitfield"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -29,16 +30,17 @@ type Peer struct {
 	conn           net.Conn
 	addr           netip.AddrPort
 	log            *slog.Logger
-	stats          *PeerStats
+	stats          *peerStats
 	messageOutbox  chan *protocol.Message
 	state          uint32
 	lastActivityNs atomic.Int64
-	stopped        atomic.Bool
 	workQueue      <-chan *scheduler.WorkItem
 	eventQueue     chan<- scheduler.Event
+	cancel         context.CancelFunc
+	stopped        atomic.Bool
 }
 
-type PeerStats struct {
+type peerStats struct {
 	Downloaded        atomic.Uint64
 	Uploaded          atomic.Uint64
 	DownloadRate      atomic.Uint64
@@ -100,7 +102,7 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, e
 		log:           log,
 		conn:          conn,
 		addr:          addr,
-		stats:         &PeerStats{},
+		stats:         &peerStats{},
 		workQueue:     opts.workQueue,
 		eventQueue:    opts.eventQueue,
 		messageOutbox: make(chan *protocol.Message, opts.config.PeerOutboxBacklog),
@@ -108,15 +110,25 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, e
 	p.setState(stateAmChoking|statePeerChoking, true)
 	p.lastActivityNs.Store(time.Now().UnixNano())
 	p.stats.ConnectedAt = time.Now()
+	p.eventQueue <- scheduler.NewHandshakeEVent(p.addr)
 
 	return p, nil
 }
 
-func (p *Peer) Run(ctx context.Context) {
-	go func() { p.readMessagesLoop(ctx) }()
-	go func() { p.writeMessagesLoop(ctx) }()
-	go func() { p.requestWorkerLoop(ctx) }()
-	go func() { p.downloadUploadRatesLoop(ctx) }()
+func (p *Peer) Run(ctx context.Context) error {
+	defer p.cleanup()
+
+	ctx, cancel := context.WithCancel(ctx)
+	p.cancel = cancel
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error { return p.readMessagesLoop(gctx) })
+	g.Go(func() error { return p.writeMessagesLoop(gctx) })
+	g.Go(func() error { return p.requestWorkerLoop(gctx) })
+	g.Go(func() error { return p.downloadUploadRatesLoop(gctx) })
+
+	return g.Wait()
 }
 
 func (p *Peer) Close() {
@@ -124,9 +136,11 @@ func (p *Peer) Close() {
 		return
 	}
 
+	if p.cancel != nil {
+		p.cancel()
+	}
+
 	_ = p.conn.Close()
-	close(p.messageOutbox)
-	p.stats.DisconnectedAt = time.Now()
 }
 
 func (p *Peer) AmChoking() bool      { return p.getState(stateAmChoking) }
@@ -137,6 +151,36 @@ func (p *Peer) PeerInterested() bool { return p.getState(statePeerInterested) }
 func (p *Peer) Idleness() time.Duration {
 	ns := time.Unix(0, p.lastActivityNs.Load())
 	return time.Since(ns)
+}
+
+func (p *Peer) Stats() PeerMetrics {
+	lastNs := p.lastActivityNs.Load()
+	lastActive := time.Unix(0, lastNs)
+	connectedAt := p.stats.ConnectedAt
+
+	return PeerMetrics{
+		Addr:           p.addr,
+		Downloaded:     p.stats.Downloaded.Load(),
+		Uploaded:       p.stats.Uploaded.Load(),
+		RequestsSent:   p.stats.RequestsSent.Load(),
+		BlocksReceived: p.stats.PiecesReceived.Load(),
+		BlocksFailed:   p.stats.RequestsTimeout.Load(),
+		LastActive:     lastActive,
+		ConnectedAt:    connectedAt,
+		DownloadRate:   p.stats.DownloadRate.Load(),
+		UploadRate:     p.stats.UploadRate.Load(),
+		IsChoked:       p.PeerChoking(),
+		IsInterested:   p.AmInterested(),
+	}
+}
+
+func (p *Peer) cleanup() {
+	p.stopped.Store(true)
+
+	close(p.messageOutbox)
+
+	p.stats.DisconnectedAt = time.Now()
+	p.eventQueue <- scheduler.NewPeerGoneEvent(p.addr)
 }
 
 func (p *Peer) readMessagesLoop(ctx context.Context) error {
@@ -199,7 +243,7 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 			lastActivityAt := time.Unix(0, p.lastActivityNs.Load())
 
 			if time.Since(lastActivityAt) >= p.cfg.PeerHeartbeatInterval {
-				p.messageOutbox <- nil
+				p.pushMessage(ctx, nil)
 			}
 		}
 	}
@@ -309,9 +353,11 @@ func (p *Peer) requestWorkerLoop(ctx context.Context) error {
 				message = protocol.MessageNotInterested()
 			case scheduler.WorkSendInterested:
 				message = protocol.MessageInterested()
+			case scheduler.WorkCancelPiece:
+				message = protocol.MessageCancel(work.Piece, work.Begin, work.Length)
 			}
 
-			p.messageOutbox <- message
+			p.pushMessage(ctx, message)
 		}
 	}
 }
@@ -471,24 +517,11 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 	}
 }
 
-// Stats returns a snapshot of metrics for this peer.
-func (p *Peer) Stats() PeerMetrics {
-	lastNs := p.lastActivityNs.Load()
-	lastActive := time.Unix(0, lastNs)
-	connectedAt := p.stats.ConnectedAt
+func (p *Peer) pushMessage(ctx context.Context, message *protocol.Message) {
+	select {
+	case p.messageOutbox <- message:
 
-	return PeerMetrics{
-		Addr:           p.addr,
-		Downloaded:     p.stats.Downloaded.Load(),
-		Uploaded:       p.stats.Uploaded.Load(),
-		RequestsSent:   p.stats.RequestsSent.Load(),
-		BlocksReceived: p.stats.PiecesReceived.Load(),
-		BlocksFailed:   p.stats.RequestsTimeout.Load(),
-		LastActive:     lastActive,
-		ConnectedAt:    connectedAt,
-		DownloadRate:   p.stats.DownloadRate.Load(),
-		UploadRate:     p.stats.UploadRate.Load(),
-		IsChoked:       p.PeerChoking(),
-		IsInterested:   p.AmInterested(),
+	case <-ctx.Done():
+		return
 	}
 }

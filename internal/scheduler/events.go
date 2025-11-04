@@ -66,6 +66,13 @@ func NewPeerGoneEvent(addr netip.AddrPort) PeerGoneEvent {
 	}
 }
 
+func NewHandshakeEVent(addr netip.AddrPort) HandshakeEvent {
+	return PeerEvent[HandshakeData]{
+		Peer: addr,
+		Data: HandshakeData{},
+	}
+}
+
 type BitfieldData struct {
 	bf bitfield.Bitfield
 }
@@ -103,6 +110,8 @@ func NewPieceEvent(addr netip.AddrPort, piece, begin uint32, data []byte) PieceE
 
 func (s *PieceScheduler) handleEvent(event Event) {
 	switch e := event.(type) {
+	case HandshakeEvent:
+		s.onPeerHandshake(e.Peer)
 	case BitfieldEvent:
 		s.onPeerBitfield(e.Peer, e.Data.bf)
 	case HaveEvent:
@@ -118,6 +127,19 @@ func (s *PieceScheduler) handleEvent(event Event) {
 	default:
 		s.log.Warn("unknown event type", "event", e)
 	}
+}
+
+func (s *PieceScheduler) onPeerHandshake(peer netip.AddrPort) {
+	s.peerStateMut.Lock()
+	ps, ok := s.peerState[peer]
+	s.peerStateMut.Unlock()
+
+	if !ok {
+		s.log.Warn("peer not found", "peer", peer)
+		return
+	}
+
+	ps.workQueue <- &WorkItem{Type: WorkSendBitfield, Bitfield: s.bitfield}
 }
 
 func (s *PieceScheduler) onPeerBitfield(peer netip.AddrPort, bf bitfield.Bitfield) {
