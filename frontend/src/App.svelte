@@ -8,6 +8,7 @@
   import EmptyState from './components/EmptyState.svelte'
   import DetailPanel from './components/DetailPanel.svelte'
   import AddTorrentDialog from './components/AddTorrentDialog.svelte'
+  import EditTorrentDialog from './components/EditTorrentDialog.svelte'
   // import SettingsDialog from './components/SettingsDialog.svelte' // TODO: Fix SettingsDialog config
 
   let fileInput: HTMLInputElement
@@ -21,6 +22,8 @@
   let selectedStats: any = null
   let statsUpdateInterval: number | null = null
   let showAddDialog = false
+  let showEditDialog = false
+  let editingTorrentId: number | null = null
   // let showSettingsDialog = false // TODO: Fix SettingsDialog config
   let pendingFile: File | null = null
   let defaultDownloadPath = ''
@@ -228,6 +231,22 @@
     fileInput.click()
   }
 
+  function openEditDialog(id: number) {
+    editingTorrentId = id
+    showEditDialog = true
+  }
+
+  function handleEditDialogConfirm() {
+    showEditDialog = false
+    editingTorrentId = null
+    uploadStatus = 'Torrent configuration updated'
+  }
+
+  function handleEditDialogCancel() {
+    showEditDialog = false
+    editingTorrentId = null
+  }
+
   // TODO: Fix SettingsDialog config
   // function openSettingsDialog() {
   //   showSettingsDialog = true
@@ -295,6 +314,7 @@
             selected={selectedTorrentId === torrent.id}
             onSelect={() => selectTorrent(torrent.id)}
             onRemove={() => removeTorrent(torrent.id)}
+            onSettings={() => openEditDialog(torrent.id)}
           />
         {/each}
       {/if}
@@ -332,6 +352,14 @@
     defaultPath={defaultDownloadPath}
     onConfirm={handleAddDialogConfirm}
     onCancel={handleAddDialogCancel}
+  />
+
+  <EditTorrentDialog
+    show={showEditDialog}
+    torrentName={torrents.find(t => t.id === editingTorrentId)?.torrentData?.metainfo?.info?.name || ''}
+    infoHash={editingTorrentId ? formatHash(torrents.find(t => t.id === editingTorrentId)?.torrentData?.metainfo?.hash || []) : ''}
+    onConfirm={handleEditDialogConfirm}
+    onCancel={handleEditDialogCancel}
   />
 
   <!-- TODO: Fix SettingsDialog config

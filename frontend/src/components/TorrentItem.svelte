@@ -12,6 +12,7 @@
   export let selected: boolean = false
   export let onSelect: () => void
   export let onRemove: () => void
+  export let onSettings: () => void
 </script>
 
 <div class="torrent-item" class:selected on:click={onSelect}>
@@ -27,9 +28,14 @@
       <span class="info-item">↑ {uploadSpeed}</span>
     </div>
   </div>
-  <button class="remove-btn" on:click|stopPropagation={onRemove} aria-label="Remove torrent">
-    ×
-  </button>
+  <div class="action-buttons">
+    <button class="settings-btn" on:click|stopPropagation={onSettings} aria-label="Torrent settings" title="Settings">
+      ⚙
+    </button>
+    <button class="remove-btn" on:click|stopPropagation={onRemove} aria-label="Remove torrent" title="Remove">
+      ×
+    </button>
+  </div>
 </div>
 
 <style>
@@ -95,6 +101,36 @@
   .info-item {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
+  }
+
+  .action-buttons {
+    display: flex;
+    gap: var(--spacing-2);
+  }
+
+  .settings-btn {
+    background-color: transparent;
+    border: 1px solid var(--color-border-tertiary);
+    color: var(--color-text-disabled);
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-family-base);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-base);
+    opacity: 0.6;
+  }
+
+  .settings-btn:hover {
+    background-color: var(--color-bg-hover);
+    border-color: var(--color-border-active);
+    color: var(--color-text-secondary);
+    opacity: 1;
   }
 
   .remove-btn {

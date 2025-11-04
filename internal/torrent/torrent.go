@@ -150,6 +150,23 @@ func (t *Torrent) GetStats() *Stats {
 	return s
 }
 
+func (t *Torrent) GetConfig() *Config {
+	return t.cfg
+}
+
+func (t *Torrent) UpdateConfig(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+
+	t.cfg = cfg
+	t.log.Info("torrent configuration updated")
+
+	// Note: Some config changes may require restart to take effect
+	// For now we just update the stored config
+	// TODO: Apply runtime config changes where possible
+}
+
 func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
 	stats := t.peerManager.Stats()
 	downloaded := stats.TotalDownloaded

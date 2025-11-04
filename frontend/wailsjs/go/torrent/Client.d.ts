@@ -7,6 +7,8 @@ export function AddTorrent(arg1:Array<number>,arg2:torrent.Config):Promise<torre
 
 export function GetDefaultConfig():Promise<torrent.Config>;
 
+export function GetTorrentConfig(arg1:string):Promise<torrent.Config>;
+
 export function GetTorrentStats(arg1:string):Promise<torrent.Stats>;
 
 export function RemoveTorrent(arg1:string):Promise<void>;
@@ -14,3 +16,5 @@ export function RemoveTorrent(arg1:string):Promise<void>;
 export function SelectDownloadDirectory():Promise<string>;
 
 export function Startup(arg1:context.Context):Promise<void>;
+
+export function UpdateTorrentConfig(arg1:string,arg2:torrent.Config):Promise<void>;

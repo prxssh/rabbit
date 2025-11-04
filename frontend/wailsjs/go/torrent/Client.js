@@ -10,6 +10,10 @@ export function GetDefaultConfig() {
   return window['go']['torrent']['Client']['GetDefaultConfig']();
 }
 
+export function GetTorrentConfig(arg1) {
+  return window['go']['torrent']['Client']['GetTorrentConfig'](arg1);
+}
+
 export function GetTorrentStats(arg1) {
   return window['go']['torrent']['Client']['GetTorrentStats'](arg1);
 }
@@ -24,4 +28,8 @@ export function SelectDownloadDirectory() {
 
 export function Startup(arg1) {
   return window['go']['torrent']['Client']['Startup'](arg1);
+}
+
+export function UpdateTorrentConfig(arg1, arg2) {
+  return window['go']['torrent']['Client']['UpdateTorrentConfig'](arg1, arg2);
 }

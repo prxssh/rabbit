@@ -118,6 +118,46 @@ func (c *Client) GetTorrentStats(infoHashHex string) *Stats {
 	return torrent.GetStats()
 }
 
+func (c *Client) GetTorrentConfig(infoHashHex string) *Config {
+	var infoHash [sha1.Size]byte
+
+	bytes, err := hex.DecodeString(infoHashHex)
+	if err != nil || len(bytes) != sha1.Size {
+		return nil
+	}
+	copy(infoHash[:], bytes)
+
+	c.mu.RLock()
+	torrent, ok := c.torrents[infoHash]
+	c.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	return torrent.GetConfig()
+}
+
+func (c *Client) UpdateTorrentConfig(infoHashHex string, cfg *Config) error {
+	var infoHash [sha1.Size]byte
+
+	bytes, err := hex.DecodeString(infoHashHex)
+	if err != nil || len(bytes) != sha1.Size {
+		return err
+	}
+	copy(infoHash[:], bytes)
+
+	c.mu.RLock()
+	torrent, ok := c.torrents[infoHash]
+	c.mu.RUnlock()
+	if !ok {
+		c.log.Warn("torrent not found for config update", "info_hash", infoHashHex)
+		return nil
+	}
+
+	torrent.UpdateConfig(cfg)
+	return nil
+}
+
 func (c *Client) SelectDownloadDirectory() (string, error) {
 	path, err := runtime.OpenDirectoryDialog(c.ctx, runtime.OpenDialogOptions{
 		Title: "Select Download Directory",
