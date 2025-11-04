@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/protocol"
 	"github.com/prxssh/rabbit/internal/scheduler"
 	"github.com/prxssh/rabbit/pkg/bitfield"
@@ -78,6 +77,7 @@ type peerOpts struct {
 	log        *slog.Logger
 	pieceCount int
 	infoHash   [sha1.Size]byte
+	clientID   [sha1.Size]byte
 	workQueue  <-chan *scheduler.WorkItem
 	eventQueue chan<- scheduler.Event
 	config     *Config
@@ -91,7 +91,7 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, e
 		return nil, err
 	}
 
-	handshake := protocol.NewHandshake(opts.infoHash, config.Load().ClientID)
+	handshake := protocol.NewHandshake(opts.infoHash, opts.clientID)
 	if _, err := handshake.Exchange(conn, true); err != nil {
 		_ = conn.Close()
 		return nil, err

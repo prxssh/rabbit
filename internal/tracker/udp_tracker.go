@@ -9,8 +9,6 @@ import (
 	"net"
 	"net/url"
 	"time"
-
-	"github.com/prxssh/rabbit/internal/config"
 )
 
 const (
@@ -199,8 +197,8 @@ func (ut *UDPTracker) sendAnnouncePacket(
 	binary.BigEndian.PutUint32(packet[80:84], uint32(params.Event))
 	binary.BigEndian.PutUint32(packet[84:88], 0)
 	binary.BigEndian.PutUint32(packet[88:92], ut.key)
-	binary.BigEndian.PutUint32(packet[92:96], params.NumWant)
-	binary.BigEndian.PutUint16(packet[96:98], params.Port)
+	binary.BigEndian.PutUint32(packet[92:96], params.numWant)
+	binary.BigEndian.PutUint16(packet[96:98], params.port)
 
 	n, err := ut.conn.Write(packet[:])
 	if err != nil {
@@ -249,7 +247,7 @@ func (ut *UDPTracker) readAnnouncePacket(
 	leechers := binary.BigEndian.Uint32(packet[12:16])
 	seeders := binary.BigEndian.Uint32(packet[16:20])
 
-	peers, err := decodePeers(packet[20:nread], config.Load().HasIPV6)
+	peers, err := decodePeers(packet[20:nread], false)
 	if err != nil {
 		return nil, err
 	}

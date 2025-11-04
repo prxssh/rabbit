@@ -2,10 +2,10 @@ package torrent
 
 import (
 	"context"
+	"crypto/sha1"
 	"log/slog"
 	"sync"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/meta"
 	"github.com/prxssh/rabbit/internal/peer"
 	"github.com/prxssh/rabbit/internal/scheduler"
@@ -15,37 +15,45 @@ import (
 )
 
 type Torrent struct {
+	clientID    [sha1.Size]byte
+	cfg         *Config
 	Size        int64          `json:"size"`
 	Metainfo    *meta.Metainfo `json:"metainfo"`
 	tracker     *tracker.Tracker
 	peerManager *peer.Swarm
 	storage     *storage.Store
+	scheduler   *scheduler.PieceScheduler
 	cancel      context.CancelFunc
 	stopOnce    sync.Once
 	log         *slog.Logger
 	refillPeerQ chan struct{}
 }
 
-func NewTorrent(data []byte) (*Torrent, error) {
+func NewTorrent(clientID [sha1.Size]byte, data []byte, cfg *Config) (*Torrent, error) {
 	metainfo, err := meta.ParseMetainfo(data)
 	if err != nil {
 		return nil, err
 	}
 
+	if cfg == nil {
+		cfg = WithDefaultConfig()
+	}
+
 	torrent := &Torrent{
+		cfg:      cfg,
 		Metainfo: metainfo,
 		Size:     metainfo.Size(),
 		log:      slog.Default().With("torrent", metainfo.Info.Name),
 	}
 
-	storage, err := storage.NewStorage(metainfo, nil, torrent.log)
+	storage, err := storage.NewStorage(metainfo, cfg.Storage, torrent.log)
 	if err != nil {
 		return nil, err
 	}
 	torrent.storage = storage
 
 	scheduler, err := scheduler.NewPieceScheduler(&scheduler.Opts{
-		Config:           scheduler.WithDefaultConfig(),
+		Config:           cfg.Scheduler,
 		Log:              torrent.log,
 		TotalSize:        torrent.Size,
 		PieceHashes:      metainfo.Info.Pieces,
@@ -53,8 +61,10 @@ func NewTorrent(data []byte) (*Torrent, error) {
 		PieceQueue:       storage.PieceQueue,
 		PieceResultQueue: storage.PieceResultQueue,
 	})
+	torrent.scheduler = scheduler
 
 	peerManager, err := peer.NewSwarm(&peer.SwarmOpts{
+		Config:     cfg.Peer,
 		Log:        torrent.log,
 		Scheduler:  scheduler,
 		InfoHash:   metainfo.InfoHash,
@@ -69,6 +79,7 @@ func NewTorrent(data []byte) (*Torrent, error) {
 		metainfo.Announce,
 		metainfo.AnnounceList,
 		&tracker.TrackerOpts{
+			Config:            cfg.Tracker,
 			Log:               torrent.log,
 			OnAnnounceStart:   torrent.buildAnnounceParams,
 			OnAnnounceSuccess: torrent.peerManager.AdmitPeers,
@@ -91,6 +102,8 @@ func (t *Torrent) Run(ctx context.Context) error {
 
 	g.Go(func() error { return t.tracker.Run(gctx) })
 	g.Go(func() error { return t.peerManager.Run(gctx) })
+	g.Go(func() error { return t.scheduler.Run(gctx) })
+	g.Go(func() error { return t.storage.Run(gctx) })
 
 	return g.Wait()
 }
@@ -150,11 +163,9 @@ func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
 	}
 
 	return &tracker.AnnounceParams{
-		NumWant:    50,
 		Event:      event,
-		Port:       config.Load().Port,
 		InfoHash:   t.Metainfo.InfoHash,
-		PeerID:     config.Load().ClientID,
+		PeerID:     t.clientID,
 		Uploaded:   stats.TotalUploaded,
 		Downloaded: stats.TotalDownloaded,
 		Left:       uint64(t.Size) - stats.TotalDownloaded,

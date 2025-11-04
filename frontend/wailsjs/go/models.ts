@@ -1,88 +1,3 @@
-export namespace config {
-	
-	export class Config {
-	    DefaultDownloadDir: string;
-	    ClientID: number[];
-	    ReadTimeout: number;
-	    WriteTimeout: number;
-	    DialTimeout: number;
-	    MaxPeers: number;
-	    NumWant: number;
-	    AnnounceInterval: number;
-	    MinAnnounceInterval: number;
-	    MaxAnnounceBackoff: number;
-	    Port: number;
-	    MaxUploadRate: number;
-	    MaxDownloadRate: number;
-	    RateLimitRefresh: number;
-	    PeerOutboundQueueBacklog: number;
-	    PieceDownloadStrategy: number;
-	    MaxInflightRequestsPerPeer: number;
-	    MinInflightRequestsPerPeer: number;
-	    RequestQueueTime: number;
-	    RequestTimeout: number;
-	    EndgameDupPerBlock: number;
-	    EndgameThreshold: number;
-	    MaxRequestsPerPiece: number;
-	    UploadSlots: number;
-	    RechokeInterval: number;
-	    OptimisticUnchokeInterval: number;
-	    PeerHeartbeatInterval: number;
-	    PeerInactivityDuration: number;
-	    KeepAliveInterval: number;
-	    MetricsEnabled: boolean;
-	    MetricsBindAddr: string;
-	    EnableIPv6: boolean;
-	    EnableDHT: boolean;
-	    EnablePEX: boolean;
-	    HasIPV6: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new Config(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.DefaultDownloadDir = source["DefaultDownloadDir"];
-	        this.ClientID = source["ClientID"];
-	        this.ReadTimeout = source["ReadTimeout"];
-	        this.WriteTimeout = source["WriteTimeout"];
-	        this.DialTimeout = source["DialTimeout"];
-	        this.MaxPeers = source["MaxPeers"];
-	        this.NumWant = source["NumWant"];
-	        this.AnnounceInterval = source["AnnounceInterval"];
-	        this.MinAnnounceInterval = source["MinAnnounceInterval"];
-	        this.MaxAnnounceBackoff = source["MaxAnnounceBackoff"];
-	        this.Port = source["Port"];
-	        this.MaxUploadRate = source["MaxUploadRate"];
-	        this.MaxDownloadRate = source["MaxDownloadRate"];
-	        this.RateLimitRefresh = source["RateLimitRefresh"];
-	        this.PeerOutboundQueueBacklog = source["PeerOutboundQueueBacklog"];
-	        this.PieceDownloadStrategy = source["PieceDownloadStrategy"];
-	        this.MaxInflightRequestsPerPeer = source["MaxInflightRequestsPerPeer"];
-	        this.MinInflightRequestsPerPeer = source["MinInflightRequestsPerPeer"];
-	        this.RequestQueueTime = source["RequestQueueTime"];
-	        this.RequestTimeout = source["RequestTimeout"];
-	        this.EndgameDupPerBlock = source["EndgameDupPerBlock"];
-	        this.EndgameThreshold = source["EndgameThreshold"];
-	        this.MaxRequestsPerPiece = source["MaxRequestsPerPiece"];
-	        this.UploadSlots = source["UploadSlots"];
-	        this.RechokeInterval = source["RechokeInterval"];
-	        this.OptimisticUnchokeInterval = source["OptimisticUnchokeInterval"];
-	        this.PeerHeartbeatInterval = source["PeerHeartbeatInterval"];
-	        this.PeerInactivityDuration = source["PeerInactivityDuration"];
-	        this.KeepAliveInterval = source["KeepAliveInterval"];
-	        this.MetricsEnabled = source["MetricsEnabled"];
-	        this.MetricsBindAddr = source["MetricsBindAddr"];
-	        this.EnableIPv6 = source["EnableIPv6"];
-	        this.EnableDHT = source["EnableDHT"];
-	        this.EnablePEX = source["EnablePEX"];
-	        this.HasIPV6 = source["HasIPV6"];
-	    }
-	}
-
-}
-
 export namespace meta {
 	
 	export class File {
@@ -191,6 +106,36 @@ export namespace meta {
 
 export namespace peer {
 	
+	export class Config {
+	    ReadTimeout: number;
+	    WriteTimeout: number;
+	    DialTimeout: number;
+	    MaxPeers: number;
+	    UploadSlots: number;
+	    RechokeInterval: number;
+	    OptimisticUnchokeInterval: number;
+	    PeerHeartbeatInterval: number;
+	    PeerInactivityDuration: number;
+	    PeerOutboxBacklog: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ReadTimeout = source["ReadTimeout"];
+	        this.WriteTimeout = source["WriteTimeout"];
+	        this.DialTimeout = source["DialTimeout"];
+	        this.MaxPeers = source["MaxPeers"];
+	        this.UploadSlots = source["UploadSlots"];
+	        this.RechokeInterval = source["RechokeInterval"];
+	        this.OptimisticUnchokeInterval = source["OptimisticUnchokeInterval"];
+	        this.PeerHeartbeatInterval = source["PeerHeartbeatInterval"];
+	        this.PeerInactivityDuration = source["PeerInactivityDuration"];
+	        this.PeerOutboxBacklog = source["PeerOutboxBacklog"];
+	    }
+	}
 	export class PeerMetrics {
 	    // Go type: netip
 	    Addr: any;
@@ -251,8 +196,96 @@ export namespace peer {
 
 }
 
+export namespace scheduler {
+	
+	export class Config {
+	    DownloadStrategy: number;
+	    MaxInflightRequestsPerPeer: number;
+	    MinInflightRequestsPerPeer: number;
+	    RequestQueueTimeout: number;
+	    RequestTimeout: number;
+	    EndgameDuplicatePerBlock: number;
+	    EndgameThreshold: number;
+	    MaxRequestBacklog: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DownloadStrategy = source["DownloadStrategy"];
+	        this.MaxInflightRequestsPerPeer = source["MaxInflightRequestsPerPeer"];
+	        this.MinInflightRequestsPerPeer = source["MinInflightRequestsPerPeer"];
+	        this.RequestQueueTimeout = source["RequestQueueTimeout"];
+	        this.RequestTimeout = source["RequestTimeout"];
+	        this.EndgameDuplicatePerBlock = source["EndgameDuplicatePerBlock"];
+	        this.EndgameThreshold = source["EndgameThreshold"];
+	        this.MaxRequestBacklog = source["MaxRequestBacklog"];
+	    }
+	}
+
+}
+
+export namespace storage {
+	
+	export class Config {
+	    DownloadDir: string;
+	    PieceQueueSize: number;
+	    DiskQueueSize: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DownloadDir = source["DownloadDir"];
+	        this.PieceQueueSize = source["PieceQueueSize"];
+	        this.DiskQueueSize = source["DiskQueueSize"];
+	    }
+	}
+
+}
+
 export namespace torrent {
 	
+	export class Config {
+	    Scheduler?: scheduler.Config;
+	    Storage?: storage.Config;
+	    Peer?: peer.Config;
+	    Tracker?: tracker.Config;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Scheduler = this.convertValues(source["Scheduler"], scheduler.Config);
+	        this.Storage = this.convertValues(source["Storage"], storage.Config);
+	        this.Peer = this.convertValues(source["Peer"], peer.Config);
+	        this.Tracker = this.convertValues(source["Tracker"], tracker.Config);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Stats {
 	    totalPeers: number;
 	    connectingPeers: number;
@@ -358,6 +391,31 @@ export namespace torrent {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace tracker {
+	
+	export class Config {
+	    NumWant: number;
+	    AnnounceInterval: number;
+	    MinAnnounceInterval: number;
+	    MaxAnnounceBackoff: number;
+	    Port: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.NumWant = source["NumWant"];
+	        this.AnnounceInterval = source["AnnounceInterval"];
+	        this.MinAnnounceInterval = source["MinAnnounceInterval"];
+	        this.MaxAnnounceBackoff = source["MaxAnnounceBackoff"];
+	        this.Port = source["Port"];
+	    }
 	}
 
 }

@@ -196,7 +196,7 @@ func (s *PieceScheduler) onPeerChoke(peer netip.AddrPort) {
 		return
 	}
 
-	ps.choked = true
+	ps.choking = true
 }
 
 func (s *PieceScheduler) onPeerUnchoke(peer netip.AddrPort) {
@@ -209,7 +209,7 @@ func (s *PieceScheduler) onPeerUnchoke(peer netip.AddrPort) {
 		return
 	}
 
-	ps.choked = false
+	ps.choking = false
 }
 
 type BlockData struct {

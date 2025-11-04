@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -22,6 +21,35 @@ const (
 	maxBackoffShift        = 5
 	maxConsecutiveFailures = 5
 )
+
+type Config struct {
+	// NumWant is the maximum number of peers to request the tracker.
+	NumWant uint32
+
+	// AnnounceInterval overrides tracker's suggested interval.
+	// 0 uses tracker default.
+	AnnounceInterval time.Duration
+
+	// MinAnnounceInterval enforces a minimum time between announces.
+	MinAnnounceInterval time.Duration
+
+	// MaxAnnounceBackoff caps exponential backoff for failed announces.
+	MaxAnnounceBackoff time.Duration
+
+	// Port is the TCP port this client listens on for incoming peer
+	// connections.
+	Port uint16
+}
+
+func WithDefaultConfig() *Config {
+	return &Config{
+		NumWant:             50,
+		AnnounceInterval:    0,
+		MinAnnounceInterval: 20 * time.Minute,
+		MaxAnnounceBackoff:  45 * time.Minute,
+		Port:                8080,
+	}
+}
 
 type AnnounceParams struct {
 	InfoHash   [sha1.Size]byte
@@ -33,8 +61,8 @@ type AnnounceParams struct {
 	Key        uint32
 	TrackerID  string
 	IP         string
-	NumWant    uint32
-	Port       uint16
+	port       uint16
+	numWant    uint32
 }
 
 type AnnounceResponse struct {
@@ -95,6 +123,7 @@ type TrackerMetrics struct {
 }
 
 type Tracker struct {
+	cfg               *Config
 	tiers             [][]*url.URL
 	mu                sync.Mutex
 	trackers          map[string]TrackerProtocol
@@ -109,9 +138,13 @@ type TrackerOpts struct {
 	OnAnnounceStart   func() *AnnounceParams
 	OnAnnounceSuccess func(addrs []netip.AddrPort)
 	Log               *slog.Logger
+	Config            *Config
 }
 
 func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*Tracker, error) {
+	if opts.Config == nil {
+		return nil, errors.New("config missing")
+	}
 	if opts.OnAnnounceStart == nil {
 		return nil, errors.New("OnAnnounceStart hook missing")
 	}
@@ -139,6 +172,7 @@ func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*T
 	log := opts.Log.With("component", "tracker", "tiers", len(tiers))
 
 	return &Tracker{
+		cfg:               opts.Config,
 		log:               log,
 		tiers:             tiers,
 		stats:             &Stats{},
@@ -153,6 +187,7 @@ func (t *Tracker) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error { return t.announceLoop(gctx) })
+
 	return g.Wait()
 }
 
@@ -193,6 +228,9 @@ func (t *Tracker) RefillPeers() {
 func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*AnnounceResponse, error) {
 	t.stats.TotalAnnounces.Add(1)
 	t.stats.LastAnnounce.Store(time.Now().Unix())
+
+	params.numWant = t.cfg.NumWant
+	params.port = t.cfg.Port
 
 	var lastErr error
 
@@ -258,14 +296,23 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 		resp, err := t.Announce(ctx, t.onAnnounceStart())
 		if err != nil {
 			consecutiveFailures++
-			backoff := calculateBackoff(consecutiveFailures, maxBackoffShift)
+			backoff := calculateBackoff(
+				consecutiveFailures,
+				maxBackoffShift,
+				t.cfg.MaxAnnounceBackoff,
+			)
 			ticker.Reset(backoff)
 			return err
 		}
 
 		consecutiveFailures = 0
 		t.onAnnounceSuccess(resp.Peers)
-		ticker.Reset(getNextAnnounceInterval(resp))
+
+		ticker.Reset(getNextAnnounceInterval(
+			resp,
+			t.cfg.AnnounceInterval,
+			t.cfg.MinAnnounceInterval,
+		))
 
 		return nil
 	}
@@ -285,11 +332,13 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 
 		case <-ticker.C:
 			if err := runOnce(); err != nil {
+				t.log.Error("failed to announce", "error", err.Error())
 				return err
 			}
 
 		case <-t.reannounceNow:
 			if err := runOnce(); err != nil {
+				t.log.Error("failed to  reannounce", "error", err.Error())
 				return err
 			}
 		}
@@ -405,7 +454,7 @@ func parseTrackerURL(raw string) (*url.URL, bool) {
 	}
 }
 
-func calculateBackoff(failures int, maxShift int) time.Duration {
+func calculateBackoff(failures int, maxShift int, maxAnnounceBackoff time.Duration) time.Duration {
 	const baseDelay = 15 * time.Second
 
 	shift := failures - 1
@@ -413,18 +462,16 @@ func calculateBackoff(failures int, maxShift int) time.Duration {
 		shift = maxShift
 	}
 
-	delay := baseDelay * (1 << uint(shift))
-
-	if delay > config.Load().MaxAnnounceBackoff {
-		delay = config.Load().MaxAnnounceBackoff
-	}
-
+	delay := max(maxAnnounceBackoff, baseDelay*(1<<uint(shift)))
 	jitter := time.Duration(rand.Int63n(int64(delay) / 2))
 	return delay - (delay / 4) + jitter
 }
 
-func getNextAnnounceInterval(resp *AnnounceResponse) time.Duration {
-	interval := config.Load().AnnounceInterval
+func getNextAnnounceInterval(
+	resp *AnnounceResponse,
+	announceInterval, minAnnounceInterval time.Duration,
+) time.Duration {
+	interval := announceInterval
 	if interval == 0 {
 		interval = 2 * time.Minute
 	}
@@ -436,9 +483,8 @@ func getNextAnnounceInterval(resp *AnnounceResponse) time.Duration {
 		interval = resp.MinInterval
 	}
 
-	if config.Load().MinAnnounceInterval > 0 &&
-		interval < config.Load().MinAnnounceInterval {
-		interval = config.Load().MinAnnounceInterval
+	if minAnnounceInterval > 0 && interval < minAnnounceInterval {
+		interval = minAnnounceInterval
 	}
 
 	return interval

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import {AddTorrent, GetTorrentStats, RemoveTorrent, GetConfig, UpdateConfig} from '../wailsjs/go/torrent/Client.js'
+  import {AddTorrent, GetTorrentStats, RemoveTorrent, GetDefaultConfig} from '../wailsjs/go/torrent/Client.js'
   import type {torrent, peer} from '../wailsjs/go/models'
   import {onDestroy, onMount} from 'svelte'
   import TopBar from './components/TopBar.svelte'
@@ -8,7 +8,7 @@
   import EmptyState from './components/EmptyState.svelte'
   import DetailPanel from './components/DetailPanel.svelte'
   import AddTorrentDialog from './components/AddTorrentDialog.svelte'
-  import SettingsDialog from './components/SettingsDialog.svelte'
+  // import SettingsDialog from './components/SettingsDialog.svelte' // TODO: Fix SettingsDialog config
 
   let fileInput: HTMLInputElement
   let isDragging = false
@@ -21,21 +21,21 @@
   let selectedStats: any = null
   let statsUpdateInterval: number | null = null
   let showAddDialog = false
-  let showSettingsDialog = false
+  // let showSettingsDialog = false // TODO: Fix SettingsDialog config
   let pendingFile: File | null = null
   let defaultDownloadPath = ''
   let totalDownloadRate = 0
   let totalUploadRate = 0
 
   onMount(async () => {
-    // Load default download path from config
+    // Load default download path from default config
     try {
-      const cfg = await GetConfig()
-      if (cfg) {
-        defaultDownloadPath = cfg.DefaultDownloadDir
+      const cfg = await GetDefaultConfig()
+      if (cfg?.Storage) {
+        defaultDownloadPath = cfg.Storage.DownloadDir
       }
     } catch (error) {
-      console.error('Failed to load config:', error)
+      console.error('Failed to load default config:', error)
     }
   })
 
@@ -57,13 +57,9 @@
     if (files && files.length > 0) {
       const file = files[0]
       if (file.name.endsWith('.torrent')) {
-        // If default path exists, use it directly
-        if (defaultDownloadPath) {
-          await uploadTorrent(file, defaultDownloadPath)
-        } else {
-          pendingFile = file
-          showAddDialog = true
-        }
+        // Always show dialog for configuration
+        pendingFile = file
+        showAddDialog = true
       } else {
         uploadStatus = 'Error: Please select a .torrent file'
       }
@@ -76,13 +72,9 @@
     if (files && files.length > 0) {
       const file = files[0]
       if (file.name.endsWith('.torrent')) {
-        // If default path exists, use it directly
-        if (defaultDownloadPath) {
-          uploadTorrent(file, defaultDownloadPath)
-        } else {
-          pendingFile = file
-          showAddDialog = true
-        }
+        // Always show dialog for configuration
+        pendingFile = file
+        showAddDialog = true
       } else {
         uploadStatus = 'Error: Please select a .torrent file'
       }
@@ -156,13 +148,13 @@
     totalUploadRate = aggUpload
   }
 
-  async function uploadTorrent(file: File, downloadPath: string) {
+  async function uploadTorrent(file: File, config: torrent.Config) {
     try {
       uploadStatus = `Uploading ${file.name}...`
       const arrayBuffer = await file.arrayBuffer()
       const bytes = new Uint8Array(arrayBuffer)
 
-      const result: torrent.Torrent = await AddTorrent(Array.from(bytes), downloadPath)
+      const result: torrent.Torrent = await AddTorrent(Array.from(bytes), config)
       uploadStatus = `Success: ${file.name} added`
       selectedFile = null
 
@@ -183,23 +175,15 @@
     }
   }
 
-  async function handleAddDialogConfirm(downloadPath: string, remember: boolean) {
+  async function handleAddDialogConfirm(config: torrent.Config, remember: boolean) {
     if (pendingFile) {
-      uploadTorrent(pendingFile, downloadPath)
+      uploadTorrent(pendingFile, config)
       pendingFile = null
 
-      // Update config if user checked "Remember this location"
-      if (remember) {
-        defaultDownloadPath = downloadPath
-        try {
-          const cfg = await GetConfig()
-          if (cfg) {
-            cfg.DefaultDownloadDir = downloadPath
-            await UpdateConfig(cfg)
-          }
-        } catch (error) {
-          console.error('Failed to update config:', error)
-        }
+      // Update default download path if user checked "Remember this location"
+      if (remember && config.Storage?.DownloadDir) {
+        defaultDownloadPath = config.Storage.DownloadDir
+        // TODO: Persist this to app config
       }
     }
     showAddDialog = false
@@ -244,23 +228,15 @@
     fileInput.click()
   }
 
-  function openSettingsDialog() {
-    showSettingsDialog = true
-  }
+  // TODO: Fix SettingsDialog config
+  // function openSettingsDialog() {
+  //   showSettingsDialog = true
+  // }
 
-  async function closeSettingsDialog() {
-    showSettingsDialog = false
-
-    // Reload config to get updated default download path
-    try {
-      const cfg = await GetConfig()
-      if (cfg) {
-        defaultDownloadPath = cfg.DefaultDownloadDir
-      }
-    } catch (error) {
-      console.error('Failed to reload config:', error)
-    }
-  }
+  // async function closeSettingsDialog() {
+  //   showSettingsDialog = false
+  //   // Reload config
+  // }
 
   $: selectedTorrent = torrents.find(t => t.id === selectedTorrentId)
 
@@ -299,7 +275,6 @@
   <TopBar
     torrentCount={torrents.length}
     onAddTorrent={openFileDialog}
-    onOpenSettings={openSettingsDialog}
     downloadSpeed={formatBytesPerSec(totalDownloadRate)}
     uploadSpeed={formatBytesPerSec(totalUploadRate)}
   />
@@ -359,10 +334,12 @@
     onCancel={handleAddDialogCancel}
   />
 
+  <!-- TODO: Fix SettingsDialog config
   <SettingsDialog
     show={showSettingsDialog}
     onClose={closeSettingsDialog}
   />
+  -->
 </main>
 
 <style>

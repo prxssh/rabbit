@@ -1,6 +1,7 @@
 <script lang="ts">
-  import {GetConfig, UpdateConfig, SelectDownloadDirectory} from '../../wailsjs/go/torrent/Client.js'
-  import type {config} from '../../wailsjs/go/models'
+  // TODO: Fix SettingsDialog to use new config system
+  import {SelectDownloadDirectory} from '../../wailsjs/go/torrent/Client.js'
+  // import type {config} from '../../wailsjs/go/models'
   import {onMount} from 'svelte'
   import Modal from './ui/Modal.svelte'
   import Button from './ui/Button.svelte'
@@ -8,7 +9,7 @@
   export let show = false
   export let onClose: () => void
 
-  let cfg: config.Config | null = null
+  // let cfg: config.Config | null = null
   let loading = true
   let saveStatus = ''
 
@@ -22,29 +23,30 @@
   let pieceStrategy = 1 // 0=Random, 1=RarestFirst, 2=Sequential
 
   onMount(async () => {
-    await loadConfig()
+    // await loadConfig()
+    loading = false
   })
 
-  async function loadConfig() {
-    try {
-      loading = true
-      cfg = await GetConfig()
-      if (cfg) {
-        downloadDir = cfg.DefaultDownloadDir
-        port = cfg.Port
-        numWant = cfg.NumWant
-        maxPeers = cfg.MaxPeers
-        maxUploadRate = Number(cfg.MaxUploadRate)
-        maxDownloadRate = Number(cfg.MaxDownloadRate)
-        pieceStrategy = cfg.PieceDownloadStrategy
-      }
-    } catch (error) {
-      console.error('Failed to load config:', error)
-      saveStatus = 'Failed to load settings'
-    } finally {
-      loading = false
-    }
-  }
+  // async function loadConfig() {
+  //   try {
+  //     loading = true
+  //     cfg = await GetConfig()
+  //     if (cfg) {
+  //       downloadDir = cfg.DefaultDownloadDir
+  //       port = cfg.Port
+  //       numWant = cfg.NumWant
+  //       maxPeers = cfg.MaxPeers
+  //       maxUploadRate = Number(cfg.MaxUploadRate)
+  //       maxDownloadRate = Number(cfg.MaxDownloadRate)
+  //       pieceStrategy = cfg.PieceDownloadStrategy
+  //     }
+  //   } catch (error) {
+  //     console.error('Failed to load config:', error)
+  //     saveStatus = 'Failed to load settings'
+  //   } finally {
+  //     loading = false
+  //   }
+  // }
 
   async function selectDirectory() {
     try {
@@ -90,48 +92,43 @@
     return null
   }
 
-  async function saveSettings() {
-    if (!cfg) return
-
-    // Validate before saving
-    const validationError = validateSettings()
-    if (validationError) {
-      saveStatus = validationError
-      setTimeout(() => {
-        saveStatus = ''
-      }, 3000)
-      return
-    }
-
-    try {
-      saveStatus = 'Saving...'
-
-      const updatedConfig: config.Config = {
-        ...cfg,
-        DefaultDownloadDir: downloadDir,
-        Port: port,
-        NumWant: numWant,
-        MaxPeers: maxPeers,
-        MaxUploadRate: maxUploadRate,
-        MaxDownloadRate: maxDownloadRate,
-        PieceDownloadStrategy: pieceStrategy
-      }
-
-      await UpdateConfig(updatedConfig)
-      saveStatus = 'Settings saved successfully!'
-
-      setTimeout(() => {
-        saveStatus = ''
-        onClose()
-      }, 1500)
-    } catch (error) {
-      console.error('Failed to save settings:', error)
-      saveStatus = 'Failed to save settings'
-      setTimeout(() => {
-        saveStatus = ''
-      }, 3000)
-    }
-  }
+  // async function saveSettings() {
+  //   if (!cfg) return
+  //   // Validate before saving
+  //   const validationError = validateSettings()
+  //   if (validationError) {
+  //     saveStatus = validationError
+  //     setTimeout(() => {
+  //       saveStatus = ''
+  //     }, 3000)
+  //     return
+  //   }
+  //   try {
+  //     saveStatus = 'Saving...'
+  //     const updatedConfig: config.Config = {
+  //       ...cfg,
+  //       DefaultDownloadDir: downloadDir,
+  //       Port: port,
+  //       NumWant: numWant,
+  //       MaxPeers: maxPeers,
+  //       MaxUploadRate: maxUploadRate,
+  //       MaxDownloadRate: maxDownloadRate,
+  //       PieceDownloadStrategy: pieceStrategy
+  //     }
+  //     await UpdateConfig(updatedConfig)
+  //     saveStatus = 'Settings saved successfully!'
+  //     setTimeout(() => {
+  //       saveStatus = ''
+  //       onClose()
+  //     }, 1500)
+  //   } catch (error) {
+  //     console.error('Failed to save settings:', error)
+  //     saveStatus = 'Failed to save settings'
+  //     setTimeout(() => {
+  //       saveStatus = ''
+  //     }, 3000)
+  //   }
+  // }
 
   function handleCancel() {
     saveStatus = ''

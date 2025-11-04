@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/pkg/bencode"
 	"github.com/prxssh/rabbit/pkg/cast"
 )
@@ -88,14 +87,14 @@ func (ht *HTTPTracker) buildAnnounceURL(params *AnnounceParams) string {
 
 	q.Set("info_hash", string(params.InfoHash[:]))
 	q.Set("peer_id", string(params.PeerID[:]))
-	q.Set("port", strconv.Itoa(int(params.Port)))
+	q.Set("port", strconv.Itoa(int(params.port)))
 	q.Set("uploaded", strconv.FormatUint(params.Uploaded, 10))
 	q.Set("downloaded", strconv.FormatUint(params.Downloaded, 10))
 	q.Set("left", strconv.FormatUint(params.Left, 10))
 	// q.Set("compact", "1")
 
-	if params.NumWant > 0 {
-		q.Set("numwant", strconv.Itoa(int(params.NumWant)))
+	if params.numWant > 0 {
+		q.Set("numwant", strconv.Itoa(int(params.numWant)))
 	}
 	if params.Key != 0 {
 		q.Set("key", strconv.FormatUint(uint64(params.Key), 10))
@@ -169,15 +168,17 @@ func parsePeers(d map[string]any) ([]netip.AddrPort, error) {
 		out = append(out, ps...)
 	}
 
-	if config.Load().HasIPV6 {
-		if v6, ok := d["peers6"]; ok {
-			ps, err := decodePeers(v6, true)
-			if err != nil {
-				return nil, err
+	/*
+		if config.Load().HasIPV6 {
+			if v6, ok := d["peers6"]; ok {
+				ps, err := decodePeers(v6, true)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, ps...)
 			}
-			out = append(out, ps...)
 		}
-	}
+	*/
 
 	return out, nil
 }

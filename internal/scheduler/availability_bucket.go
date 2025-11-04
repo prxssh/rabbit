@@ -4,8 +4,6 @@ import (
 	"math/bits"
 	"math/rand"
 	"sync"
-
-	"github.com/prxssh/rabbit/internal/config"
 )
 
 // availabilityBucket efficiently tracks which pieces belong to each
@@ -57,7 +55,7 @@ type availabilityBucket struct {
 }
 
 func newAvailabilityBucket(pieceCount int) *availabilityBucket {
-	maxAvail := config.Load().MaxPeers
+	maxAvail := 500
 	rng := rand.New(rand.NewSource(rand.Int63()))
 
 	b := &availabilityBucket{

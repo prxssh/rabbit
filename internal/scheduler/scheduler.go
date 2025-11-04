@@ -47,7 +47,7 @@ type Config struct {
 	RequestTimeout             time.Duration
 	EndgameDuplicatePerBlock   int
 	EndgameThreshold           int
-	maxRequestBacklog          int
+	MaxRequestBacklog          int
 }
 
 func WithDefaultConfig() *Config {
@@ -58,12 +58,13 @@ func WithDefaultConfig() *Config {
 		RequestTimeout:             25 * time.Second,
 		EndgameDuplicatePerBlock:   5,
 		EndgameThreshold:           30,
+		MaxRequestBacklog:          100,
 	}
 }
 
 type peerState struct {
 	inflight         int
-	choked           bool
+	choking          bool
 	workQueue        chan *WorkItem
 	addr             netip.AddrPort
 	bitfield         bitfield.Bitfield
@@ -73,6 +74,7 @@ type peerState struct {
 func newPeerState(addr netip.AddrPort, pieceCount, workQueueSize int) *peerState {
 	return &peerState{
 		addr:             addr,
+		choking:          true,
 		bitfield:         bitfield.New(pieceCount),
 		blockAssignments: make(map[uint64]struct{}),
 		workQueue:        make(chan *WorkItem, workQueueSize),
@@ -261,7 +263,7 @@ func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *WorkItem 
 		return peerState.workQueue
 	}
 
-	peerState := newPeerState(peer, s.pieceCount, s.cfg.maxRequestBacklog)
+	peerState := newPeerState(peer, s.pieceCount, s.cfg.MaxRequestBacklog)
 	s.peerState[peer] = peerState
 	return peerState.workQueue
 }
@@ -402,7 +404,7 @@ func (s *PieceScheduler) findWorkForIdlePeers() {
 
 	s.peerStateMut.RLock()
 	for addr, ps := range s.peerState {
-		if !ps.choked && ps.inflight < s.cfg.MaxInflightRequestsPerPeer {
+		if !ps.choking && ps.inflight < s.cfg.MaxInflightRequestsPerPeer {
 			candidates = append(candidates, addr)
 		}
 	}

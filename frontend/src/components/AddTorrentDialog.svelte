@@ -1,29 +1,43 @@
 <script lang="ts">
-  import {SelectDownloadDirectory} from '../../wailsjs/go/torrent/Client.js'
+  import {SelectDownloadDirectory, GetDefaultConfig} from '../../wailsjs/go/torrent/Client.js'
+  import type {torrent} from '../../wailsjs/go/models'
   import Modal from './ui/Modal.svelte'
   import Button from './ui/Button.svelte'
+  import TorrentConfigDialog from './TorrentConfigDialog.svelte'
 
   export let show = false
   export let selectedFile: File | null = null
-  export let onConfirm: (downloadPath: string, remember: boolean) => void
+  export let onConfirm: (config: torrent.Config, remember: boolean) => void
   export let onCancel: () => void
   export let defaultPath = ''
 
-  let downloadPath = ''
+  let config: torrent.Config | null = null
   let isSelectingPath = false
   let rememberLocation = false
+  let showConfigDialog = false
 
-  // Set download path when dialog opens and default exists
-  $: if (show && defaultPath && !downloadPath) {
-    downloadPath = defaultPath
+  // Load default config when dialog opens
+  $: if (show && !config) {
+    loadDefaultConfig()
+  }
+
+  async function loadDefaultConfig() {
+    try {
+      config = await GetDefaultConfig()
+      if (defaultPath && config?.Storage) {
+        config.Storage.DownloadDir = defaultPath
+      }
+    } catch (error) {
+      console.error('Failed to load default config:', error)
+    }
   }
 
   async function selectDirectory() {
     try {
       isSelectingPath = true
       const path = await SelectDownloadDirectory()
-      if (path) {
-        downloadPath = path
+      if (path && config?.Storage) {
+        config.Storage.DownloadDir = path
       }
     } catch (error) {
       console.error('Failed to select directory:', error)
@@ -32,16 +46,29 @@
     }
   }
 
+  function handleConfigure() {
+    showConfigDialog = true
+  }
+
+  function handleConfigConfirm(updatedConfig: torrent.Config) {
+    config = updatedConfig
+    showConfigDialog = false
+  }
+
+  function handleConfigCancel() {
+    showConfigDialog = false
+  }
+
   function handleConfirm() {
-    if (downloadPath) {
-      onConfirm(downloadPath, rememberLocation)
-      downloadPath = ''
+    if (config && config.Storage?.DownloadDir) {
+      onConfirm(config, rememberLocation)
+      config = null
       rememberLocation = false
     }
   }
 
   function handleCancel() {
-    downloadPath = ''
+    config = null
     rememberLocation = false
     onCancel()
   }
@@ -60,7 +87,7 @@
         <input
           type="text"
           readonly
-          value={downloadPath || 'Click browse to select...'}
+          value={config?.Storage?.DownloadDir || 'Click browse to select...'}
           class="path-input"
         />
         <Button
@@ -76,15 +103,27 @@
         <span>Remember this location</span>
       </label>
     </div>
+
+    <div class="field">
+      <Button variant="secondary" on:click={handleConfigure} style="width: 100%;">
+        Advanced Configuration...
+      </Button>
+    </div>
   </div>
 
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={handleCancel}>Cancel</Button>
-    <Button variant="primary" disabled={!downloadPath} on:click={handleConfirm}>
+    <Button variant="primary" disabled={!config?.Storage?.DownloadDir} on:click={handleConfirm}>
       Add Torrent
     </Button>
   </svelte:fragment>
 </Modal>
+
+<TorrentConfigDialog
+  show={showConfigDialog}
+  onConfirm={handleConfigConfirm}
+  onCancel={handleConfigCancel}
+/>
 
 <style>
   .content {

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/torrent"
 	"github.com/prxssh/rabbit/pkg/logging"
 	"github.com/wailsapp/wails/v2"
@@ -20,14 +19,13 @@ var assets embed.FS
 func main() {
 	setupLogger()
 
-	if err := config.Init(); err != nil {
-		slog.Error("failed to initialize config", "error", err)
+	client, err := torrent.NewClient()
+	if err != nil {
+		slog.Error("failed to initialize rabbit client", "error", err.Error())
 		os.Exit(1)
 	}
 
-	client := torrent.NewClient()
-
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:            "Rabbit - BitTorrent Client & Search Engine",
 		Width:            1024,
 		Height:           768,
@@ -45,8 +43,8 @@ func main() {
 
 func setupLogger() {
 	opts := logging.DefaultOptions()
-	opts.SlogOpts.Level = slog.LevelInfo
-	opts.SlogOpts.AddSource = false
+	opts.SlogOpts.Level = slog.LevelDebug
+	opts.SlogOpts.AddSource = true
 
 	h := logging.NewPrettyHandler(os.Stdout, &opts)
 	l := slog.New(h)

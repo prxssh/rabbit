@@ -2,12 +2,12 @@ package torrent
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
 	"log/slog"
 	"sync"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -15,22 +15,34 @@ type Client struct {
 	log      *slog.Logger
 	ctx      context.Context
 	mu       sync.RWMutex
+	clientID [sha1.Size]byte
 	torrents map[[sha1.Size]byte]*Torrent
 }
 
-func NewClient() *Client {
-	return &Client{
-		torrents: make(map[[sha1.Size]byte]*Torrent),
-		log:      slog.Default(),
+func NewClient() (*Client, error) {
+	clientID, err := generateClientID()
+	if err != nil {
+		return nil, err
 	}
+
+	return &Client{
+		log:      slog.Default(),
+		ctx:      context.Background(),
+		clientID: clientID,
+		torrents: make(map[[sha1.Size]byte]*Torrent),
+	}, nil
 }
 
 func (c *Client) Startup(ctx context.Context) {
 	c.ctx = ctx
 }
 
-func (c *Client) AddTorrent(data []byte) (*Torrent, error) {
-	torrent, err := NewTorrent(data)
+func (c *Client) AddTorrent(data []byte, cfg *Config) (*Torrent, error) {
+	if cfg == nil {
+		cfg = WithDefaultConfig()
+	}
+
+	torrent, err := NewTorrent(c.clientID, data, cfg)
 	if err != nil {
 		c.log.Error("failed to parse torrent", "error", err, "size", len(data))
 		return nil, err
@@ -51,6 +63,10 @@ func (c *Client) AddTorrent(data []byte) (*Torrent, error) {
 
 	go func() { torrent.Run(c.ctx) }()
 	return torrent, nil
+}
+
+func (c *Client) GetDefaultConfig() *Config {
+	return WithDefaultConfig()
 }
 
 func (c *Client) RemoveTorrent(infoHashHex string) error {
@@ -112,10 +128,15 @@ func (c *Client) SelectDownloadDirectory() (string, error) {
 	return path, nil
 }
 
-func (c *Client) GetConfig() *config.Config {
-	return config.Load()
-}
+func generateClientID() ([sha1.Size]byte, error) {
+	var peerID [sha1.Size]byte
 
-func (c *Client) UpdateConfig(cfg *config.Config) {
-	config.Swap(*cfg)
+	prefix := []byte("-RBBT-")
+	copy(peerID[:], prefix)
+
+	if _, err := rand.Read(peerID[len(prefix):]); err != nil {
+		return [sha1.Size]byte{}, err
+	}
+
+	return peerID, nil
 }

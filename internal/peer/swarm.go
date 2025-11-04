@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/prxssh/rabbit/internal/config"
 	"github.com/prxssh/rabbit/internal/scheduler"
 	"github.com/prxssh/rabbit/internal/storage"
 )
@@ -54,8 +53,8 @@ type Config struct {
 	PeerOutboxBacklog int
 }
 
-func WithDefaultConfig() Config {
-	return Config{
+func WithDefaultConfig() *Config {
+	return &Config{
 		UploadSlots:               4,
 		MaxPeers:                  50,
 		ReadTimeout:               45 * time.Second,
@@ -77,6 +76,7 @@ type Swarm struct {
 	peers           map[netip.AddrPort]*Peer
 	admitPeerCh     chan netip.AddrPort
 	infoHash        [sha1.Size]byte
+	clientID        [sha1.Size]byte
 	stats           *SwarmStats
 	cancel          context.CancelFunc
 	closeOnce       sync.Once
@@ -106,6 +106,7 @@ type SwarmOpts struct {
 	PieceCount int
 	Log        *slog.Logger
 	InfoHash   [sha1.Size]byte
+	ClientID   [sha1.Size]byte
 	Scheduler  *scheduler.PieceScheduler
 }
 
@@ -138,7 +139,9 @@ func (s *Swarm) PieceStates() []int {
 
 func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	return &Swarm{
+		cfg:         opts.Config,
 		infoHash:    opts.InfoHash,
+		clientID:    opts.ClientID,
 		pieceCount:  opts.PieceCount,
 		stats:       &SwarmStats{},
 		scheduler:   opts.Scheduler,
@@ -247,6 +250,8 @@ func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error)
 	// TODO: cleanup queue when peer connection fails
 	peer, err := NewPeer(ctx, addr, &peerOpts{
 		infoHash:   s.infoHash,
+		clientID:   s.clientID,
+		config:     s.cfg,
 		log:        s.log,
 		eventQueue: s.scheduler.GetEventQueue(),
 		workQueue:  s.scheduler.GetPeerWorkQueue(addr),
@@ -303,7 +308,7 @@ func (s *Swarm) maintenanceLoop(ctx context.Context) error {
 			return nil
 
 		case <-ticker.C:
-			maxIdle := config.Load().PeerInactivityDuration
+			maxIdle := s.cfg.PeerInactivityDuration
 			var inactivePeerAddrs []netip.AddrPort
 
 			s.peerMu.RLock()
