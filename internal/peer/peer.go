@@ -539,6 +539,10 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 		// nothing to do
 
 	case protocol.Request:
+		if piece, begin, _, ok := message.ParseRequest(); ok {
+			event.PieceIndex = &piece
+			event.BlockOffset = &begin
+		}
 		p.stats.RequestsSent.Add(1)
 
 	case protocol.Piece:
