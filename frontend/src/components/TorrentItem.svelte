@@ -3,7 +3,6 @@
   import ProgressBar from './ProgressBar.svelte'
   import { formatBytes } from '../lib/utils'
 
-  export let id: number
   export let torrentData: torrent.Torrent | undefined
   export let fileName: string
   export let progress: number
@@ -13,9 +12,22 @@
   export let onSelect: () => void
   export let onRemove: () => void
   export let onSettings: () => void
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      onSelect()
+    }
+  }
 </script>
 
-<div class="torrent-item" class:selected on:click={onSelect}>
+<div
+  class="torrent-item"
+  class:selected
+  role="button"
+  tabindex="0"
+  on:click={onSelect}
+  on:keydown={handleKeydown}
+>
   <div class="torrent-main">
     <div class="torrent-header">
       <div class="torrent-name">{torrentData?.metainfo?.info?.name || fileName}</div>

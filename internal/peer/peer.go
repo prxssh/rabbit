@@ -30,6 +30,7 @@ type Peer struct {
 	addr           netip.AddrPort
 	log            *slog.Logger
 	stats          *peerStats
+	messageHistory *MessageHistoryBuffer
 	messageOutbox  chan *protocol.Message
 	state          uint32
 	lastActivityNs atomic.Int64
@@ -98,14 +99,15 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, e
 	}
 
 	p := &Peer{
-		cfg:           opts.config,
-		log:           log,
-		conn:          conn,
-		addr:          addr,
-		stats:         &peerStats{},
-		workQueue:     opts.workQueue,
-		eventQueue:    opts.eventQueue,
-		messageOutbox: make(chan *protocol.Message, opts.config.PeerOutboxBacklog),
+		cfg:            opts.config,
+		log:            log,
+		conn:           conn,
+		addr:           addr,
+		stats:          &peerStats{},
+		workQueue:      opts.workQueue,
+		eventQueue:     opts.eventQueue,
+		messageHistory: NewMessageHistoryBuffer(500),
+		messageOutbox:  make(chan *protocol.Message, opts.config.PeerOutboxBacklog),
 	}
 	p.setState(stateAmChoking|statePeerChoking, true)
 	p.lastActivityNs.Store(time.Now().UnixNano())
@@ -141,6 +143,10 @@ func (p *Peer) Close() {
 	}
 
 	_ = p.conn.Close()
+}
+
+func (p *Peer) GetMessageHistory(limit int) ([]*Event, error) {
+	return p.messageHistory.Get(limit)
 }
 
 func (p *Peer) AmChoking() bool      { return p.getState(stateAmChoking) }
@@ -414,9 +420,20 @@ func (p *Peer) setState(state uint32, on bool) {
 }
 
 func (p *Peer) handleMessage(message *protocol.Message) error {
+	event := &Event{
+		Timestamp: time.Now(),
+		Direction: EventReceived,
+	}
+
 	if protocol.IsKeepAlive(message) {
+		event.MessageType = "Keep Alive"
+		event.PayloadSize = 0
+		p.messageHistory.Add(event)
 		return nil
 	}
+
+	event.MessageType = message.ID.String()
+	event.PayloadSize = len(message.Payload)
 
 	switch message.ID {
 	case protocol.Choke:
@@ -443,6 +460,7 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 			return errors.New("malformed have message")
 		}
 
+		event.PieceIndex = &piece
 		p.eventQueue <- scheduler.NewHaveEvent(p.addr, piece)
 
 	case protocol.Piece:
@@ -451,16 +469,22 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 			return errors.New("malformed piece message")
 		}
 
+		event.PieceIndex = &piece
+		event.BlockOffset = &begin
+
 		p.eventQueue <- scheduler.NewPieceEvent(p.addr, piece, begin, block)
 
 		p.stats.PiecesReceived.Add(1)
 		p.stats.Downloaded.Add(uint64(len(block)))
 
 	case protocol.Request:
-		_, _, _, ok := message.ParseRequest()
+		piece, begin, _, ok := message.ParseRequest()
 		if !ok {
 			return errors.New("malformed request message")
 		}
+
+		event.PieceIndex = &piece
+		event.BlockOffset = &begin
 
 		p.stats.RequestsReceived.Add(1)
 
@@ -471,16 +495,27 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 		return fmt.Errorf("invalid message id '%d'", message.ID)
 	}
 
+	p.messageHistory.Add(event)
+
 	return nil
 }
 
 func (p *Peer) onMessageWritten(message *protocol.Message) {
+	event := &Event{
+		Timestamp: time.Now(),
+		Direction: EventSent,
+	}
+
 	p.stats.MessagesSent.Add(1)
-	p.lastActivityNs.Store(time.Now().UnixNano())
+	p.lastActivityNs.Store(event.Timestamp.UnixNano())
 
 	if message == nil {
+		event.MessageType = "Keep Alive"
+		p.messageHistory.Add(event)
 		return
 	}
+
+	event.MessageType = message.ID.String()
 
 	switch message.ID {
 	case protocol.Choke:
@@ -496,7 +531,9 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 		p.setState(stateAmInterested, false)
 
 	case protocol.Have:
-		// nothing to do
+		if piece, ok := message.ParseHave(); ok {
+			event.PieceIndex = &piece
+		}
 
 	case protocol.Bitfield:
 		// nothing to do
@@ -505,12 +542,12 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 		p.stats.RequestsSent.Add(1)
 
 	case protocol.Piece:
-		// Piece upload truly happened; count piece + payload bytes
-		// Payload layout: 4(index) + 4(begin) + <block>
-		if n := len(message.Payload); n >= 8 {
-			blockLen := n - 8
+		if piece, begin, block, ok := message.ParsePiece(); ok {
+			event.PieceIndex = &piece
+			event.BlockOffset = &begin
+
 			p.stats.PiecesSent.Add(1)
-			p.stats.Uploaded.Add(uint64(blockLen))
+			p.stats.Uploaded.Add(uint64(len(block)))
 		}
 
 	case protocol.Cancel:
@@ -519,6 +556,8 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 	default:
 		// unknown ID; nothing to do
 	}
+
+	p.messageHistory.Add(event)
 }
 
 func (p *Peer) pushMessage(ctx context.Context, message *protocol.Message) {

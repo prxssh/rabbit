@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/prxssh/rabbit/internal/peer"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -156,6 +157,29 @@ func (c *Client) UpdateTorrentConfig(infoHashHex string, cfg *Config) error {
 
 	torrent.UpdateConfig(cfg)
 	return nil
+}
+
+func (c *Client) GetPeerMessageHistory(
+	infoHashHex string,
+	peerAddr string,
+	limit int,
+) ([]*peer.Event, error) {
+	var infoHash [sha1.Size]byte
+
+	bytes, err := hex.DecodeString(infoHashHex)
+	if err != nil || len(bytes) != sha1.Size {
+		return nil, err
+	}
+	copy(infoHash[:], bytes)
+
+	c.mu.RLock()
+	torrent, ok := c.torrents[infoHash]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, nil
+	}
+
+	return torrent.GetPeerMessageHistory(peerAddr, limit)
 }
 
 func (c *Client) SelectDownloadDirectory() (string, error) {

@@ -9,11 +9,32 @@
       onClose()
     }
   }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (show && e.key === 'Escape') {
+      onClose()
+    }
+  }
+
+  function handleBackdropKeydown(e: KeyboardEvent) {
+    if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+      onClose()
+    }
+  }
 </script>
 
+<svelte:window on:keydown={handleKeydown} />
+
 {#if show}
-  <div class="modal-overlay" on:click={handleBackdropClick}>
-    <div class="modal-content" style="max-width: {maxWidth}">
+  <div
+    class="modal-overlay"
+    on:click={handleBackdropClick}
+    on:keydown={handleBackdropKeydown}
+    tabindex="0"
+    role="button"
+    aria-label="Close modal"
+  >
+    <div class="modal-content" style="max-width: {maxWidth}" role="document">
       <div class="modal-header">
         <h2>{title}</h2>
         <button class="close-btn" on:click={onClose} aria-label="Close">&times;</button>

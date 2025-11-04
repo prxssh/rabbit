@@ -1,9 +1,16 @@
 <script lang="ts">
+  import { createEventDispatcher } from 'svelte';
   import type {peer} from '../../wailsjs/go/models'
   import Badge from './ui/Badge.svelte'
   import { formatBytes, formatBytesPerSec } from '../lib/utils'
 
   export let peers: peer.PeerMetrics[]
+
+  const dispatch = createEventDispatcher();
+
+  function handlePeerClick(peerAddr: string) {
+    dispatch('peer-click', peerAddr);
+  }
 
   // Sort peers by connection time (descending - longest connected first)
   $: sortedPeers = [...peers].sort((a, b) => b.ConnectedFor - a.ConnectedFor)
@@ -26,7 +33,7 @@
       </thead>
       <tbody>
         {#each sortedPeers as peer}
-          <tr>
+          <tr on:click={() => handlePeerClick(peer.Addr)} style="cursor: pointer;">
             <td class="peer-addr">{peer.Addr}</td>
             <td class="peer-status">
               <div class="status-badges">

@@ -3,7 +3,9 @@ package torrent
 import (
 	"context"
 	"crypto/sha1"
+	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
 
 	"github.com/prxssh/rabbit/internal/meta"
@@ -165,6 +167,20 @@ func (t *Torrent) UpdateConfig(cfg *Config) {
 	// Note: Some config changes may require restart to take effect
 	// For now we just update the stored config
 	// TODO: Apply runtime config changes where possible
+}
+
+func (t *Torrent) GetPeerMessageHistory(peerAddr string, limit int) ([]*peer.Event, error) {
+	addr, err := netip.ParseAddrPort(peerAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	p, ok := t.peerManager.GetPeer(addr)
+	if !ok {
+		return nil, fmt.Errorf("peer not found: %s", peerAddr)
+	}
+
+	return p.GetMessageHistory(limit)
 }
 
 func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {

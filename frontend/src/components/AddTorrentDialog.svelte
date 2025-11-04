@@ -77,14 +77,15 @@
 <Modal {show} title="Add Torrent" onClose={handleCancel} maxWidth="500px">
   <div class="content">
     <div class="field">
-      <label>Torrent File</label>
-      <div class="file-name">{selectedFile?.name || 'No file selected'}</div>
+      <label for="torrent-file">Torrent File</label>
+      <div id="torrent-file" class="file-name">{selectedFile?.name || 'No file selected'}</div>
     </div>
 
     <div class="field">
-      <label>Download Location</label>
+      <label for="download-location">Download Location</label>
       <div class="path-selector">
         <input
+          id="download-location"
           type="text"
           readonly
           value={config?.Storage?.DownloadDir || 'Click browse to select...'}

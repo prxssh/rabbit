@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type {torrent, peer} from '../wailsjs/go/models'
+  import type {torrent, peer} from '../../wailsjs/go/models'
   import PeersList from './PeersList.svelte'
   import PiecesHeatmap from './PiecesHeatmap.svelte'
   import InfoCard from './ui/InfoCard.svelte'
@@ -7,6 +7,7 @@
   import Section from './ui/Section.svelte'
   import SwarmStats from './SwarmStats.svelte'
   import TrackerStats from './TrackerStats.svelte'
+  import MessageHistory from './MessageHistory.svelte'
   import { formatBytes, formatHash } from '../lib/utils'
 
   export let torrentData: torrent.Torrent | undefined
@@ -14,7 +15,8 @@
   export let pieceStates: number[] = []
   export let stats: any | undefined = undefined
 
-  let activeTab: 'details' | 'peers' = 'details'
+  let activeTab: 'details' | 'peers' | 'messages' = 'details'
+  let selectedPeer: string = 'all';
 
   $: meta = torrentData?.metainfo
   $: info = meta?.info
@@ -24,11 +26,17 @@
 
   $: tabs = [
     { id: 'details', label: 'Details' },
-    { id: 'peers', label: 'Peers', count: peers.length }
+    { id: 'peers', label: 'Peers', count: peers.length },
+    { id: 'messages', label: 'Messages' }
   ]
 
   function handleTabChange(tabId: string) {
-    activeTab = tabId as 'details' | 'peers'
+    activeTab = tabId as 'details' | 'peers' | 'messages'
+  }
+
+  function handlePeerClick(event: CustomEvent<string>) {
+    selectedPeer = event.detail;
+    activeTab = 'messages';
   }
 
   // TrackerStats renders its own computed metrics
@@ -101,9 +109,17 @@
 
         <Section title="Peers ({peers.length})">
           {#if peers.length > 0}
-            <PeersList {peers} />
+            <PeersList {peers} on:peer-click={handlePeerClick} />
           {:else}
             <div class="empty-state">No peers connected</div>
+          {/if}
+        </Section>
+      {:else if activeTab === 'messages'}
+        <Section title="Peer Message History">
+          {#if peers.length > 0}
+            <MessageHistory {infoHash} {peers} bind:selectedPeer />
+          {:else}
+            <div class="empty-state">No peers connected - no messages to display</div>
           {/if}
         </Section>
       {/if}

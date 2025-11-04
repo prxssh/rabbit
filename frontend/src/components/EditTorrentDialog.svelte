@@ -80,17 +80,18 @@
 <Modal {show} title="Edit Torrent Settings" onClose={handleCancel} maxWidth="500px">
   <div class="content">
     <div class="field">
-      <label>Torrent Name</label>
-      <div class="torrent-name">{torrentName}</div>
+      <label for="torrent-name">Torrent Name</label>
+      <div id="torrent-name" class="torrent-name">{torrentName}</div>
     </div>
 
     {#if isLoading}
       <div class="loading">Loading configuration...</div>
     {:else if config}
       <div class="field">
-        <label>Download Location</label>
+        <label for="download-location">Download Location</label>
         <div class="path-selector">
           <input
+            id="download-location"
             type="text"
             readonly
             value={config?.Storage?.DownloadDir || 'Not set'}

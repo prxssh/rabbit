@@ -10,6 +10,10 @@ export function GetDefaultConfig() {
   return window['go']['torrent']['Client']['GetDefaultConfig']();
 }
 
+export function GetPeerMessageHistory(arg1, arg2, arg3) {
+  return window['go']['torrent']['Client']['GetPeerMessageHistory'](arg1, arg2, arg3);
+}
+
 export function GetTorrentConfig(arg1) {
   return window['go']['torrent']['Client']['GetTorrentConfig'](arg1);
 }
