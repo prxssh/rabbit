@@ -214,7 +214,7 @@ func (s *PieceScheduler) onPeerUnchoke(peer netip.AddrPort) {
 
 type BlockData struct {
 	PieceIdx int
-	BlockIdx int
+	Begin    int
 	PieceLen int
 	Data     []byte
 }
@@ -251,7 +251,7 @@ func (s *PieceScheduler) onPiece(peer netip.AddrPort, p PieceData) {
 	s.pieceQueue <- &BlockData{
 		PieceIdx: piece.index,
 		PieceLen: int(pieceLen),
-		BlockIdx: pieceutil.BlockIndexForBegin(p.Begin, int(piece.length)),
+		Begin:    p.Begin,
 		Data:     p.Data,
 	}
 }

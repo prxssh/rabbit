@@ -156,17 +156,17 @@ func (s *Store) handlePieceBlock(block *scheduler.BlockData) error {
 
 	buf.mut.Lock()
 
-	if _, exists := buf.blocks[block.BlockIdx]; exists {
+	if _, exists := buf.blocks[block.Begin]; exists {
 		buf.mut.Unlock()
 		s.log.Debug(
 			"received duplicate block",
 			"piece", block.PieceIdx,
-			"block", block.BlockIdx,
+			"block", block.Begin,
 		)
 		return nil
 	}
 
-	buf.blocks[block.BlockIdx] = block.Data
+	buf.blocks[block.Begin] = block.Data
 	buf.received += len(block.Data)
 
 	if buf.received != buf.size {
