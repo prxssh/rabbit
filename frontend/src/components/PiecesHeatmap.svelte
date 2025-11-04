@@ -83,8 +83,9 @@
 
     const style = getComputedStyle(canvas)
     const completedColor = style.getPropertyValue('--color-success') || '#88ff88'
-    const inProgressColor = style.getPropertyValue('--color-accent') || '#3b82f6'
+    const inProgressColor = style.getPropertyValue('--color-accent') || '#aaaaaa'
     const notStartedColor = style.getPropertyValue('--color-bg-tertiary') || '#1a1a1a'
+    const borderColor = style.getPropertyValue('--color-border-tertiary') || '#333333'
 
     if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
       canvas.width = canvasWidth
@@ -101,17 +102,27 @@
       const state = pieceStates[i] || 0
 
       if (state === 2) {
+        // Completed - solid green
         ctx.fillStyle = completedColor
         ctx.fillRect(x, y, cellSize, cellSize)
       } else if (state === 1) {
-        const pulse = 0.5 + Math.sin(pulsePhase) * 0.5
+        // In progress - pulsing cyan with higher minimum opacity
+        const pulse = 0.6 + Math.sin(pulsePhase) * 0.4
         ctx.fillStyle = inProgressColor
         ctx.globalAlpha = pulse
         ctx.fillRect(x, y, cellSize, cellSize)
         ctx.globalAlpha = 1
       } else {
+        // Not started - dark with subtle border
         ctx.fillStyle = notStartedColor
         ctx.fillRect(x, y, cellSize, cellSize)
+
+        // Add subtle border for better visibility
+        if (cellSize >= 4) {
+          ctx.strokeStyle = borderColor
+          ctx.lineWidth = 1
+          ctx.strokeRect(x + 0.5, y + 0.5, cellSize - 1, cellSize - 1)
+        }
       }
     }
   }

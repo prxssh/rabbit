@@ -42,7 +42,7 @@
   --color-warning-border: #660000;
 
   /* Accent (used for in-progress pieces in heatmap) */
-  --color-accent: #666666;
+  --color-accent: #aaaaaa;
 
   /* Typography */
   --font-family-mono: 'Fira Code', 'JetBrains Mono', 'Courier New', monospace;
