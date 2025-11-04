@@ -121,9 +121,9 @@ func (t *Torrent) Stop() {
 type Stats struct {
 	peer.SwarmMetrics
 	tracker.TrackerMetrics
-	Progress    float64            `json:"progress"`
-	Peers       []peer.PeerMetrics `json:"peers"`
-	PieceStates []int              `json:"pieceStates"`
+	Progress    float64                `json:"progress"`
+	Peers       []peer.PeerMetrics     `json:"peers"`
+	PieceStates []scheduler.PieceState `json:"pieceStates"`
 }
 
 func (t *Torrent) GetStats() *Stats {
@@ -133,7 +133,7 @@ func (t *Torrent) GetStats() *Stats {
 	s := &Stats{
 		Progress:    0.0,
 		Peers:       t.peerManager.PeerMetrics(),
-		PieceStates: t.peerManager.PieceStates(),
+		PieceStates: t.scheduler.PieceStates(),
 	}
 	s.SwarmMetrics = swarmStats
 	s.TrackerMetrics = trackerStats
@@ -141,7 +141,7 @@ func (t *Torrent) GetStats() *Stats {
 	if total := len(s.PieceStates); total > 0 {
 		completed := 0
 		for _, st := range s.PieceStates {
-			if st == 2 { // Completed
+			if st == scheduler.PieceStateCompleted {
 				completed++
 			}
 		}

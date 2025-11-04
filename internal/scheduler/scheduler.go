@@ -189,63 +189,35 @@ func NewPieceScheduler(opts *Opts) (*PieceScheduler, error) {
 	}
 
 	return &PieceScheduler{
-		nextPiece:       0,
-		nextBlock:       0,
-		pieceCount:      n,
-		endgame:         false,
-		pieces:          pieces,
-		totalSize:       opts.TotalSize,
-		remainingBlocks: totalBlocks,
-		cfg:             opts.Config,
-		availability:    availability,
-		lastPieceLen:    lastPieceLen,
-		bitfield:        bitfield.New(n),
-		eventQueue:      make(chan Event, 1000),
-		pieceQueue:      opts.PieceQueue,
-		peerState:       make(map[netip.AddrPort]*peerState),
-		log:             opts.Log.With("component", "scheduler"),
+		nextPiece:        0,
+		nextBlock:        0,
+		pieceCount:       n,
+		endgame:          false,
+		pieces:           pieces,
+		totalSize:        opts.TotalSize,
+		remainingBlocks:  totalBlocks,
+		cfg:              opts.Config,
+		availability:     availability,
+		lastPieceLen:     lastPieceLen,
+		bitfield:         bitfield.New(n),
+		eventQueue:       make(chan Event, 1000),
+		pieceQueue:       opts.PieceQueue,
+		pieceResultQueue: opts.PieceResultQueue,
+		peerState:        make(map[netip.AddrPort]*peerState),
+		log:              opts.Log.With("component", "scheduler"),
 	}, nil
 }
 
 func (s *PieceScheduler) Run(ctx context.Context) error {
-	s.log.Debug("piece scheduler event loop started")
+	var wg sync.WaitGroup
 
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
+	wg.Go(func() { s.listenPeerEventLoop(ctx) })
+	wg.Go(func() { s.workAssignmentLoop(ctx) })
+	wg.Go(func() { s.pieceResultLoop(ctx) })
 
-	for {
-		select {
-		case <-ctx.Done():
-			s.log.Info("piece scheduler shutting down", "reason", ctx.Err().Error())
-			return nil
+	wg.Wait()
 
-		case event, ok := <-s.eventQueue:
-			if !ok {
-				s.log.Debug("event queue closed, scheduler stopping")
-				return nil
-			}
-
-			s.handleEvent(event)
-
-		case result, ok := <-s.pieceResultQueue:
-			if !ok {
-				s.log.Debug("piece result queue closed")
-				return nil
-			}
-
-			s.handlePieceResult(result)
-
-		case <-ticker.C:
-			s.findWorkForIdlePeers()
-		}
-	}
-}
-
-func (s *PieceScheduler) Bitfield() bitfield.Bitfield {
-	s.mut.RLock()
-	defer s.mut.RUnlock()
-
-	return s.bitfield
+	return nil
 }
 
 func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *WorkItem {
@@ -270,6 +242,69 @@ func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *WorkItem 
 
 func (s *PieceScheduler) GetEventQueue() chan<- Event {
 	return s.eventQueue
+}
+
+func (s *PieceScheduler) listenPeerEventLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case event, ok := <-s.eventQueue:
+			if !ok {
+				return
+			}
+
+			s.handleEvent(event)
+		}
+	}
+}
+
+func (s *PieceScheduler) pieceResultLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case result, ok := <-s.pieceResultQueue:
+			if !ok {
+				return
+			}
+
+			s.markPieceVerified(result.Piece, result.Success)
+
+			if result.Success {
+				s.broadcastHave(result.Piece)
+			}
+		}
+	}
+}
+
+func (s *PieceScheduler) workAssignmentLoop(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			candidates := make([]netip.AddrPort, 0, len(s.peerState))
+
+			s.peerStateMut.RLock()
+			for addr, ps := range s.peerState {
+				if !ps.choking && ps.inflight < s.cfg.MaxInflightRequestsPerPeer {
+					candidates = append(candidates, addr)
+				}
+			}
+			s.peerStateMut.RUnlock()
+
+			for _, addr := range candidates {
+				s.nextForPeer(addr)
+			}
+		}
+	}
 }
 
 func (s *PieceScheduler) findAvailableBlock(piece *piece) (int, bool) {
@@ -310,12 +345,12 @@ func (s *PieceScheduler) assignBlockToPeer(peer *peerState, pieceIdx, blockIdx i
 	block.status = blockInflight
 	block.owner = &blockOwner{peer: peer.addr, requestedAt: time.Now()}
 
+	s.peerStateMut.Lock()
+	defer s.peerStateMut.Unlock()
+
 	peer.inflight++
 	key := blockKey(pieceIdx, int(begin))
 	peer.blockAssignments[key] = struct{}{}
-
-	s.peerStateMut.Lock()
-	defer s.peerStateMut.Unlock()
 
 	s.inflightRequests++
 	s.remainingBlocks--
@@ -397,32 +432,6 @@ func (s *PieceScheduler) isPieceNeeded(piece int) bool {
 	}
 
 	return !s.bitfield.Has(piece) && !s.pieces[piece].verified
-}
-
-func (s *PieceScheduler) findWorkForIdlePeers() {
-	candidates := make([]netip.AddrPort, 0, len(s.peerState))
-
-	s.peerStateMut.RLock()
-	for addr, ps := range s.peerState {
-		if !ps.choking && ps.inflight < s.cfg.MaxInflightRequestsPerPeer {
-			candidates = append(candidates, addr)
-		}
-	}
-	s.peerStateMut.RUnlock()
-
-	for _, addr := range candidates {
-		s.nextForPeer(addr)
-	}
-}
-
-func (s *PieceScheduler) handlePieceResult(result *PieceResult) {
-	s.log.Debug("Received piece result", "piece", result.Piece, "success", result.Success)
-
-	s.markPieceVerified(result.Piece, result.Success)
-
-	if result.Success {
-		s.broadcastHave(result.Piece)
-	}
 }
 
 func (s *PieceScheduler) broadcastHave(piece int) {

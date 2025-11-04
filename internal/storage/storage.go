@@ -232,6 +232,8 @@ func (s *Store) writeToDiskLoop(ctx context.Context) error {
 }
 
 func (s *Store) writePiece(piece *completePiece) error {
+	s.log.Info("piece complete, writing to disk", "piece", piece.index)
+
 	pieceAbsStart := int64(piece.index) * int64(s.pieceLen)
 	pieceAbsEnd := pieceAbsStart + int64(len(piece.data))
 

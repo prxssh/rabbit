@@ -125,18 +125,6 @@ type SwarmMetrics struct {
 	UploadRate      uint64 `json:"uploadRate"`
 }
 
-// PieceStates returns the current state of each piece as integer codes:
-// 0 = NotStarted, 1 = InProgress, 2 = Completed.
-func (s *Swarm) PieceStates() []int {
-	states := s.scheduler.PieceStates()
-	out := make([]int, len(states))
-
-	for i, st := range states {
-		out[i] = int(st)
-	}
-	return out
-}
-
 func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	return &Swarm{
 		cfg:         opts.Config,

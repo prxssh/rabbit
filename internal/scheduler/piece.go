@@ -123,10 +123,6 @@ func (s *PieceScheduler) FirstUnverifiedPiece() (int, bool) {
 }
 
 func (s *PieceScheduler) markPieceVerified(piece int, ok bool) {
-	if piece < 0 || piece >= s.pieceCount {
-		return
-	}
-
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
@@ -134,6 +130,7 @@ func (s *PieceScheduler) markPieceVerified(piece int, ok bool) {
 	if ps.verified {
 		return
 	}
+
 	if ok {
 		ps.verified = true
 		s.bitfield.Set(piece)
@@ -155,6 +152,7 @@ func (s *PieceScheduler) markPieceVerified(piece int, ok bool) {
 		ps.blocks[b].status = blockWant
 		ps.blocks[b].owner = nil
 	}
+
 	ps.doneBlocks = 0
 }
 

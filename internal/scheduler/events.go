@@ -243,6 +243,13 @@ func (s *PieceScheduler) onPiece(peer netip.AddrPort, p PieceData) {
 
 	piece := s.pieces[p.Piece]
 
+	s.mut.Lock()
+	blockIdx := pieceutil.BlockIndexForBegin(p.Begin, int(piece.length))
+	piece.blocks[blockIdx].status = blockDone
+	piece.blocks[blockIdx].owner = nil
+	piece.doneBlocks++
+	s.mut.Unlock()
+
 	pieceLen := piece.length
 	if piece.isLastPiece {
 		pieceLen = pieceutil.LastPieceLength(s.totalSize, pieceLen)
