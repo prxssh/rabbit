@@ -30,7 +30,11 @@ body {
 }
 
 /* Wails/WebKit: ensure UI remains clickable in frameless windows */
-html, body, #app, main, * {
+html,
+body,
+#app,
+main,
+* {
     -webkit-app-region: no-drag;
 }
 
