@@ -6,8 +6,7 @@
 build/
 data/
 
-cmd/rabbit/build/
-cmd/rabbit/frontend/
+cmd/
 
 node_modules/
 frontend/dist/
