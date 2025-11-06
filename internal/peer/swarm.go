@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha1"
 	"log/slog"
+	"math/rand"
 	"net/netip"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,21 +71,22 @@ func WithDefaultConfig() *Config {
 }
 
 type Swarm struct {
-	cfg             *Config
-	log             *slog.Logger
-	pieceCount      int
-	peerMu          sync.RWMutex
-	peers           map[netip.AddrPort]*Peer
-	admitPeerCh     chan netip.AddrPort
-	infoHash        [sha1.Size]byte
-	clientID        [sha1.Size]byte
-	stats           *SwarmStats
-	cancel          context.CancelFunc
-	closeOnce       sync.Once
-	closed          atomic.Bool
-	storage         *storage.Store
-	scheduler       *scheduler.PieceScheduler
-	refillPeersHook func()
+	cfg                        *Config
+	log                        *slog.Logger
+	pieceCount                 int
+	peerMu                     sync.RWMutex
+	peers                      map[netip.AddrPort]*Peer
+	admitPeerCh                chan netip.AddrPort
+	infoHash                   [sha1.Size]byte
+	clientID                   [sha1.Size]byte
+	stats                      *SwarmStats
+	cancel                     context.CancelFunc
+	closeOnce                  sync.Once
+	closed                     atomic.Bool
+	storage                    *storage.Store
+	scheduler                  *scheduler.PieceScheduler
+	refillPeersHook            func()
+	optimisticUnchokedPeerAddr netip.AddrPort
 }
 
 type SwarmStats struct {
@@ -150,9 +153,12 @@ func (s *Swarm) Run(ctx context.Context) error {
 	s.cancel = cancel
 
 	var wg sync.WaitGroup
+
 	wg.Go(func() { s.maintenanceLoop(ctx) })
 	wg.Go(func() { s.admitPeersLoop(ctx) })
 	wg.Go(func() { s.statsLoop(ctx) })
+	wg.Go(func() { s.leecherChokeLoop(ctx) })
+	wg.Go(func() { s.seederChokeLoop(ctx) })
 	wg.Wait()
 
 	return nil
@@ -418,4 +424,111 @@ func (s *Swarm) statsLoop(ctx context.Context) error {
 			s.stats.DownloadingFrom.Store(downloadingFrom)
 		}
 	}
+}
+
+func (s *Swarm) leecherChokeLoop(ctx context.Context) {
+	l := s.log.With("component", "leecher_choke_loop")
+	l.Debug("started")
+
+	normalChokeTicker := time.NewTicker(10 * time.Second)
+	defer normalChokeTicker.Stop()
+
+	optimisticChokeTicker := time.NewTicker(30 * time.Second)
+	defer optimisticChokeTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-normalChokeTicker.C:
+			s.recalculateRegularUnchokes(ctx, false)
+		case <-optimisticChokeTicker.C:
+			s.recalculateOptimisticUnchoke(ctx)
+		}
+	}
+}
+
+func (s *Swarm) seederChokeLoop(ctx context.Context) {
+	l := s.log.With("component", "seeder_choke_loop")
+	l.Debug("started")
+
+	normalChokeTicker := time.NewTicker(s.cfg.RechokeInterval)
+	defer normalChokeTicker.Stop()
+
+	optimisticChokeTicker := time.NewTicker(s.cfg.OptimisticUnchokeInterval)
+	defer optimisticChokeTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-normalChokeTicker.C:
+			s.recalculateRegularUnchokes(ctx, true)
+		case <-optimisticChokeTicker.C:
+			s.recalculateOptimisticUnchoke(ctx)
+		}
+	}
+}
+
+func (s *Swarm) recalculateRegularUnchokes(ctx context.Context, isSeeder bool) {
+	var candidates []*Peer
+
+	s.peerMu.RLock()
+	for _, peer := range s.peers {
+		if peer.AmInterested() {
+			candidates = append(candidates, peer)
+		}
+	}
+	s.peerMu.RUnlock()
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if isSeeder {
+			return candidates[i].stats.UploadRate.Load() > candidates[j].stats.UploadRate.Load()
+		}
+
+		return candidates[i].stats.DownloadRate.Load() > candidates[j].stats.DownloadRate.Load()
+	})
+
+	newUnchokes := make(map[netip.AddrPort]struct{})
+	for i := 0; i < len(candidates) && i < s.cfg.UploadSlots; i++ {
+		newUnchokes[candidates[i].addr] = struct{}{}
+	}
+
+	s.peerMu.Lock()
+	for _, peer := range s.peers {
+		_, isTopPeer := newUnchokes[peer.addr]
+		isOptimistic := (peer.addr == s.optimisticUnchokedPeerAddr)
+
+		if isTopPeer || isOptimistic {
+			if peer.AmChoking() {
+				peer.Unchoke()
+			}
+		} else {
+			if !peer.AmChoking() {
+				peer.Choke()
+			}
+		}
+	}
+	s.peerMu.Unlock()
+}
+
+func (s *Swarm) recalculateOptimisticUnchoke(ctx context.Context) {
+	var candidates []*Peer
+
+	s.peerMu.RLock()
+	for _, peer := range s.peers {
+		if peer.PeerInterested() && peer.AmChoking() {
+			candidates = append(candidates, peer)
+		}
+	}
+	s.peerMu.RUnlock()
+
+	if len(candidates) == 0 {
+		s.optimisticUnchokedPeerAddr = netip.AddrPort{}
+		return
+	}
+
+	newOptimistic := candidates[rand.Intn(len(candidates))]
+	s.optimisticUnchokedPeerAddr = newOptimistic.addr
+	newOptimistic.Unchoke()
 }
