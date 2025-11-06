@@ -159,6 +159,16 @@ func (p *Peer) Idleness() time.Duration {
 	return time.Since(ns)
 }
 
+func (p *Peer) Unchoke() {
+	// TODO: make it non blocking
+	p.messageOutbox <- protocol.MessageUnchoke()
+}
+
+func (p *Peer) Choke() {
+	// TODO: make it non blocking
+	p.messageOutbox <- protocol.MessageChoke()
+}
+
 func (p *Peer) Stats() PeerMetrics {
 	lastNs := p.lastActivityNs.Load()
 	lastActive := time.Unix(0, lastNs)
