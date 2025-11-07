@@ -2,285 +2,195 @@ package scheduler
 
 import (
 	"context"
-	"crypto/sha1"
 	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
 
+	"github.com/prxssh/rabbit/internal/piece"
+	"github.com/prxssh/rabbit/pkg/availabilitybucket"
 	"github.com/prxssh/rabbit/pkg/bitfield"
-	"github.com/prxssh/rabbit/pkg/pieceutil"
 )
-
-type PieceResult struct {
-	Piece   int
-	Success bool
-}
-
-type WorkItemType int
-
-const (
-	WorkRequestPiece WorkItemType = iota
-	WorkCancelPiece
-	WorkSendInterested
-	WorkSendNotInterested
-	WorkSendHave
-	WorkSendBitfield
-	WorkSendCancel
-)
-
-type WorkItem struct {
-	Type WorkItemType
-
-	Piece  int
-	Begin  int
-	Length int
-
-	Bitfield bitfield.Bitfield
-}
 
 type Config struct {
-	DownloadStrategy           DownloadStrategy
-	MaxInflightRequestsPerPeer int
-	MinInflightRequestsPerPeer int
-	RequestQueueTimeout        time.Duration
-	RequestTimeout             time.Duration
-	EndgameDuplicatePerBlock   int
-	EndgameThreshold           int
-	MaxRequestBacklog          int
+	DownloadStrategy         DownloadStrategy
+	RequestTimeout           time.Duration
+	EndgameThreshold         int8
+	EndgameDuplicatePerBlock int8
 }
 
 func WithDefaultConfig() *Config {
 	return &Config{
-		MaxInflightRequestsPerPeer: 32,
-		MinInflightRequestsPerPeer: 4,
-		RequestQueueTimeout:        3 * time.Second,
-		RequestTimeout:             25 * time.Second,
-		EndgameDuplicatePerBlock:   5,
-		EndgameThreshold:           30,
-		MaxRequestBacklog:          100,
+		DownloadStrategy:         DownloadStrategySequential,
+		RequestTimeout:           5 * time.Second,
+		EndgameThreshold:         5, // 5% of pieces
+		EndgameDuplicatePerBlock: 5,
 	}
 }
 
 type peerState struct {
-	inflight         int
-	choking          bool
-	workQueue        chan *WorkItem
-	addr             netip.AddrPort
-	bitfield         bitfield.Bitfield
-	blockAssignments map[uint64]struct{}
+	inflightRequests    int32
+	maxInflightRequests int32
+	addr                netip.AddrPort
+	choking             bool
+	work                chan Event
+	pieces              bitfield.Bitfield
+	blockAssignments    map[uint64]struct{}
 }
 
-func newPeerState(addr netip.AddrPort, pieceCount, workQueueSize int) *peerState {
-	return &peerState{
-		addr:             addr,
-		choking:          true,
-		bitfield:         bitfield.New(pieceCount),
-		blockAssignments: make(map[uint64]struct{}),
-		workQueue:        make(chan *WorkItem, workQueueSize),
-	}
+func blockKey(pieceIdx, begin uint32) uint64 {
+	return uint64(pieceIdx)<<32 | uint64(begin)
 }
 
-// PieceScheduler is the central coordinator for a torrent download. It manages
-// the state of all pieces, tracks peer availability, and implements the
-// piece-picking strategy (e.g., rarest-first, sequential).
-//
-// All its methods that modify state are expected to be called from a single
-// "event loop" goroutine, making most fields safe to access without locks
-// *within* that loop. The eventQueue is the entry point for all state changes.
-type PieceScheduler struct {
-	log *slog.Logger
-	cfg *Config
+type PieceResult struct {
+	PieceIdx int32
+	Success  bool
+}
 
-	mut sync.RWMutex
-	// lastPieceLen is the byte length of the final piece (which may be shorter).
-	lastPieceLen int32
+type BlockData struct {
+	PieceIdx uint32
+	Begin    uint32
+	PieceLen uint32
+	Data     []byte
+}
 
-	totalSize int64
+type Scheduler struct {
+	cfg    *Config
+	logger *slog.Logger
 
-	// pieceCount is the total number of pieces in the torrent.
-	pieceCount int
+	mut                   sync.RWMutex
+	downloadedPieces      bitfield.Bitfield
+	endgameStarted        bool
+	inflightPieceRequests int32
 
-	// pieces holds the detailed state for every piece, indexed by piece number.
-	pieces []*piece
+	peerMut sync.RWMutex
+	peers   map[netip.AddrPort]*peerState
 
-	// availability tracks piece rarity for the rarest-first algorithm.
-	availability *availabilityBucket
+	pieceAvailabilityBucket *availabilitybucket.Bucket
+	pieceManager            *piece.Manager
 
-	// nextPiece is the index of the next piece to pick for sequential download
-	// (e.g., for streaming or to prioritize the start of the file).
-	nextPiece int
-
-	// nextBlock is the index of the next block within nextPiece to pick.
-	nextBlock int
-
-	// endgame is true when the download is in endgame mode (requesting all
-	// remaining blocks from all available peers).
-	endgame bool
-
-	// remainingBlocks is a count of all blocks that are still in blockWant
-	// state. This is often used to trigger endgame mode.
-	remainingBlocks int
-
-	// bitfield is our local bitfield, tracking which pieces we have verified.
-	bitfield bitfield.Bitfield
-
-	// inflightRequests is the global count of all block requests currently in
-	// flight across all peers.
-	inflightRequests int
-
-	// eventQueue is the central channel for receiving events form peers to be
-	// processed by the scheduler's event loop.
-	eventQueue chan Event
-
-	peerStateMut sync.RWMutex
-
-	// peerState tracks the state of all currently connected peers, keyed by their
-	// network address.
-	peerState map[netip.AddrPort]*peerState
-
-	pieceQueue       chan<- *BlockData
-	pieceResultQueue <-chan *PieceResult
+	peerEvent   chan Event
+	outBlocks   chan<- *BlockData
+	pieceResult <-chan *PieceResult
 }
 
 type Opts struct {
-	Config           *Config
-	Log              *slog.Logger
-	PieceHashes      [][sha1.Size]byte
-	PieceLength      int32
-	TotalSize        int64
-	PieceQueue       chan<- *BlockData
-	PieceResultQueue <-chan *PieceResult
+	Logger   *slog.Logger
+	Config   *Config
+	MaxPeers int32
 }
 
-func NewPieceScheduler(opts *Opts) (*PieceScheduler, error) {
+func NewScheduler(
+	pieceManager *piece.Manager,
+	outBlocksQueue chan<- *BlockData,
+	pieceResultQueue <-chan *PieceResult,
+	opts *Opts,
+) *Scheduler {
 	if opts.Config == nil {
 		opts.Config = WithDefaultConfig()
 	}
-
-	n := len(opts.PieceHashes)
-	availability := newAvailabilityBucket(n)
-
-	totalBlocks := 0
-	lastPieceLen := pieceutil.LastPieceLength(opts.TotalSize, opts.PieceLength)
-	pieces := make([]*piece, n)
-
-	for i := 0; i < n; i++ {
-		plen, _ := pieceutil.PieceLengthAt(i, opts.TotalSize, opts.PieceLength)
-		blockCount := pieceutil.BlocksInPiece(plen)
-		totalBlocks += blockCount
-		blocks := make([]*block, blockCount)
-
-		for j := 0; j < blockCount; j++ {
-			blocks[j] = &block{status: blockWant}
-		}
-
-		pieces[i] = &piece{
-			index:       i,
-			doneBlocks:  0,
-			length:      plen,
-			verified:    false,
-			blocks:      blocks,
-			isLastPiece: i == n-1,
-			blockCount:  blockCount,
-			sha:         opts.PieceHashes[i],
-			lastBlock:   pieceutil.LastBlockInPiece(plen),
-		}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
 	}
 
-	return &PieceScheduler{
-		nextPiece:        0,
-		nextBlock:        0,
-		pieceCount:       n,
-		endgame:          false,
-		pieces:           pieces,
-		totalSize:        opts.TotalSize,
-		remainingBlocks:  totalBlocks,
-		cfg:              opts.Config,
-		availability:     availability,
-		lastPieceLen:     lastPieceLen,
-		bitfield:         bitfield.New(n),
-		eventQueue:       make(chan Event, 1000),
-		pieceQueue:       opts.PieceQueue,
-		pieceResultQueue: opts.PieceResultQueue,
-		peerState:        make(map[netip.AddrPort]*peerState),
-		log:              opts.Log.With("component", "scheduler"),
-	}, nil
+	n := int(pieceManager.PieceCount())
+	maxAvail := int(opts.MaxPeers)
+
+	return &Scheduler{
+		cfg:                     opts.Config,
+		logger:                  opts.Logger.With("component", "scheduler"),
+		peers:                   make(map[netip.AddrPort]*peerState),
+		downloadedPieces:        bitfield.New(n),
+		endgameStarted:          false,
+		inflightPieceRequests:   0,
+		pieceAvailabilityBucket: availabilitybucket.NewBucket(n, maxAvail),
+		peerEvent:               make(chan Event, 1000),
+		pieceManager:            pieceManager,
+		outBlocks:               outBlocksQueue,
+		pieceResult:             pieceResultQueue,
+	}
 }
 
-func (s *PieceScheduler) Run(ctx context.Context) error {
+func (s *Scheduler) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 
-	wg.Go(func() { s.listenPeerEventLoop(ctx) })
-	wg.Go(func() { s.workAssignmentLoop(ctx) })
-	wg.Go(func() { s.pieceResultLoop(ctx) })
+	wg.Go(func() { s.listenPeerEvent(ctx) })
+	wg.Go(func() { s.listenVerifiedPieces(ctx) })
+	wg.Go(func() { s.assignPeerWork(ctx) })
 
 	wg.Wait()
-
-	return nil
 }
 
-func (s *PieceScheduler) GetPeerWorkQueue(peer netip.AddrPort) <-chan *WorkItem {
-	s.peerStateMut.RLock()
-	if peerState, ok := s.peerState[peer]; ok {
-		s.peerStateMut.RUnlock()
-		return peerState.workQueue
-	}
-	s.peerStateMut.RUnlock()
+func (s *Scheduler) GetPeerEventQueue() chan<- Event {
+	return s.peerEvent
+}
 
-	s.peerStateMut.Lock()
-	defer s.peerStateMut.Unlock()
+func (s *Scheduler) GetPeerWorkQueue(addr netip.AddrPort) <-chan Event {
+	s.peerMut.Lock()
+	defer s.peerMut.Unlock()
 
-	if peerState, ok := s.peerState[peer]; ok {
-		return peerState.workQueue
+	if peer, exists := s.peers[addr]; exists {
+		return peer.work
 	}
 
-	peerState := newPeerState(peer, s.pieceCount, s.cfg.MaxRequestBacklog)
-	s.peerState[peer] = peerState
-	return peerState.workQueue
+	peerState := &peerState{
+		inflightRequests: 0,
+		addr:             addr,
+		choking:          true,
+		work:             make(chan Event),
+		pieces:           bitfield.New(int(s.pieceManager.PieceCount())),
+		blockAssignments: make(map[uint64]struct{}),
+	}
+	s.peers[addr] = peerState
+
+	return peerState.work
 }
 
-func (s *PieceScheduler) GetEventQueue() chan<- Event {
-	return s.eventQueue
-}
+func (s *Scheduler) listenPeerEvent(ctx context.Context) {
+	logger := s.logger.With("function", "peer event loop")
+	logger.Debug("started")
 
-func (s *PieceScheduler) listenPeerEventLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case event, ok := <-s.eventQueue:
+		case event, ok := <-s.peerEvent:
 			if !ok {
 				return
 			}
 
-			s.handleEvent(event)
+			s.handlePeerEvent(event)
 		}
 	}
 }
 
-func (s *PieceScheduler) pieceResultLoop(ctx context.Context) {
+func (s *Scheduler) listenVerifiedPieces(ctx context.Context) {
+	logger := s.logger.With("function", "listen verified pieces")
+	logger.Debug("started")
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case result, ok := <-s.pieceResultQueue:
+		case result, ok := <-s.pieceResult:
 			if !ok {
 				return
 			}
 
-			s.markPieceVerified(result.Piece, result.Success)
-
+			s.pieceManager.MarkPieceVerified(result.PieceIdx, result.Success)
 			if result.Success {
-				s.broadcastHave(result.Piece)
+				s.broadcastHave(result.PieceIdx)
 			}
 		}
 	}
 }
 
-func (s *PieceScheduler) workAssignmentLoop(ctx context.Context) {
+func (s *Scheduler) assignPeerWork(ctx context.Context) {
+	logger := s.logger.With("function", "work assignment loop")
+	logger.Debug("started")
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -290,167 +200,49 @@ func (s *PieceScheduler) workAssignmentLoop(ctx context.Context) {
 			return
 
 		case <-ticker.C:
-			candidates := make([]netip.AddrPort, 0, len(s.peerState))
+			candidates := make([]netip.AddrPort, len(s.peers))
 
-			s.peerStateMut.RLock()
-			for addr, ps := range s.peerState {
-				if !ps.choking && ps.inflight < s.cfg.MaxInflightRequestsPerPeer {
+			s.peerMut.RLock()
+			for addr, peer := range s.peers {
+				if !peer.choking {
 					candidates = append(candidates, addr)
 				}
 			}
-			s.peerStateMut.RUnlock()
-
-			for _, addr := range candidates {
-				s.nextForPeer(addr)
-			}
+			defer s.peerMut.RUnlock()
 		}
 	}
 }
 
-func (s *PieceScheduler) findAvailableBlock(piece *piece) (int, bool) {
-	for i := 0; i < piece.blockCount; i++ {
-		if piece.blocks[i].status == blockWant {
-			return i, true
+func (s *Scheduler) broadcastHave(pieceIdx int32) {
+	s.peerMut.RLock()
+	defer s.peerMut.RUnlock()
+
+	for addr, peer := range s.peers {
+		if peer.pieces.Has(int(pieceIdx)) {
+			continue
 		}
-	}
 
-	return 0, false
-}
+		select {
+		case peer.work <- NewHaveEvent(addr, uint32(pieceIdx)):
 
-func (s *PieceScheduler) resetBlockToWant(piece int, blockIdx int) {
-	if !s.isPieceNeeded(piece) {
-		return
-	}
-
-	p := s.pieces[piece]
-	if blockIdx >= 0 && blockIdx < len(p.blocks) {
-		block := p.blocks[blockIdx]
-		if block.status == blockInflight {
-			block.status = blockWant
-			s.inflightRequests--
+		default:
+			s.logger.Warn(
+				"unable to send HAVE message; work queue full",
+				"peer", addr,
+				"piece", pieceIdx,
+			)
 		}
 	}
 }
 
-func (s *PieceScheduler) assignBlockToPeer(peer *peerState, pieceIdx, blockIdx int) {
-	piece := s.pieces[pieceIdx]
-	block := piece.blocks[blockIdx]
+func (s *Scheduler) updateAvailability(bf bitfield.Bitfield, delta int) {
+	s.mut.Lock()
+	ourBF := s.downloadedPieces.Clone()
+	s.mut.Unlock()
 
-	begin, length, err := pieceutil.BlockBounds(piece.length, blockIdx)
-	if err != nil {
-		s.log.Error("invalid block bounds", "piece", pieceIdx, "block", blockIdx)
-		return
-	}
-
-	block.status = blockInflight
-	block.owner = &blockOwner{peer: peer.addr, requestedAt: time.Now()}
-
-	s.peerStateMut.Lock()
-	defer s.peerStateMut.Unlock()
-
-	peer.inflight++
-	key := blockKey(pieceIdx, int(begin))
-	peer.blockAssignments[key] = struct{}{}
-
-	s.inflightRequests++
-	s.remainingBlocks--
-
-	select {
-	case peer.workQueue <- &WorkItem{
-		Type:   WorkRequestPiece,
-		Piece:  pieceIdx,
-		Begin:  int(begin),
-		Length: int(length),
-	}:
-
-	default:
-		s.log.Warn("work queue full, dropping request", "peer", peer.addr)
-
-		block.status = blockWant
-		block.owner = nil
-		peer.inflight--
-		delete(peer.blockAssignments, key)
-		s.inflightRequests--
-		s.remainingBlocks++
-	}
-}
-
-func (s *PieceScheduler) unassignBlockFromPeer(peer netip.AddrPort, piece, begin int) {
-	key := blockKey(piece, begin)
-
-	s.peerStateMut.Lock()
-	defer s.peerStateMut.Unlock()
-
-	ps, ok := s.peerState[peer]
-	if !ok {
-		s.log.Warn("unassign block from peer failed; not found!",
-			"peer", peer,
-			"piece", piece,
-			"begin", begin,
-		)
-		return
-	}
-
-	delete(ps.blockAssignments, key)
-	ps.inflight--
-}
-
-func (s *PieceScheduler) isBlockAssignedtoPeer(peer netip.AddrPort, piece, begin int) bool {
-	s.peerStateMut.RLock()
-	defer s.peerStateMut.RUnlock()
-
-	ps, ok := s.peerState[peer]
-	if !ok {
-		s.log.Warn("is block assigned to peer failed; not found!",
-			"peer", peer,
-			"piece", piece,
-			"begin", begin,
-		)
-		return false
-	}
-
-	key := blockKey(piece, begin)
-	_, assigned := ps.blockAssignments[key]
-	return assigned
-}
-
-func (s *PieceScheduler) updatePieceAvailability(peerBF bitfield.Bitfield, delta int) {
-	s.mut.RLock()
-	weHave := s.bitfield.Clone()
-	s.mut.RUnlock()
-
-	for i := 0; i < s.pieceCount; i++ {
-		if peerBF.Has(i) && !weHave.Has(i) {
-			s.availability.Move(i, delta)
-		}
-	}
-}
-
-func (s *PieceScheduler) isPieceNeeded(piece int) bool {
-	if piece < 0 || piece >= s.pieceCount {
-		return false
-	}
-
-	return !s.bitfield.Has(piece) && !s.pieces[piece].verified
-}
-
-func (s *PieceScheduler) broadcastHave(piece int) {
-	s.log.Debug("Broadcasting HAVE message", "piece", piece)
-
-	s.peerStateMut.RLock()
-	defer s.peerStateMut.RUnlock()
-
-	for _, ps := range s.peerState {
-		if !ps.bitfield.Has(piece) {
-			select {
-			case ps.workQueue <- &WorkItem{Type: WorkSendHave, Piece: piece}:
-			default:
-				s.log.Warn(
-					"work queue full, dropping HAVE message",
-					"peer", ps.addr,
-					"piece", piece,
-				)
-			}
+	for i := 0; i < int(s.pieceManager.PieceCount()); i++ {
+		if bf.Has(i) && !ourBF.Has(i) {
+			s.pieceAvailabilityBucket.Move(i, delta)
 		}
 	}
 }

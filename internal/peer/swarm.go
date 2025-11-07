@@ -12,47 +12,19 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/internal/scheduler"
-	"github.com/prxssh/rabbit/internal/storage"
 )
 
 type Config struct {
-	// ReadTimeout is the maximum time to wait for data from a peer before
-	// considering the connection stalled.
-	ReadTimeout time.Duration
-
-	// WriteTimeout is the maximum time to wait when sending data to a peer
-	// before considering the connection stalled.
-	WriteTimeout time.Duration
-
-	// DialTimeout is the maximum time to wait when establishing a new
-	// connection to a peer.
-	DialTimeout time.Duration
-
-	// MaxPeers is the maximum number of concurrent peer connections
-	// allowed.
-	MaxPeers int
-
-	// UploadSlots is the number of regular unchoke slots.
-	UploadSlots int
-
-	// RechokeInterval is the duration of how often to reevalute choke/unchoke
-	// decisions.
-	RechokeInterval time.Duration
-
-	// OptimisticUnchokeInterval is the duration of how often to rotate the
-	// optimistic unchoke.
+	ReadTimeout               time.Duration
+	WriteTimeout              time.Duration
+	DialTimeout               time.Duration
+	MaxPeers                  int
+	UploadSlots               int
+	RechokeInterval           time.Duration
 	OptimisticUnchokeInterval time.Duration
-
-	// PeerHeartbeatInterval is how often to send keep-alive messages to
-	// peer to maintain the connection.
-	PeerHeartbeatInterval time.Duration
-
-	// PeerInactivityDuration is the minimum interval after which a peer connection
-	// is considered inactive.
-	PeerInactivityDuration time.Duration
-
-	// PeerOutboxBacklog is the maximum messages that peer can have in its buffer to write.
-	PeerOutboxBacklog int
+	PeerHeartbeatInterval     time.Duration
+	PeerInactivityDuration    time.Duration
+	PeerOutboxBacklog         int
 }
 
 func WithDefaultConfig() *Config {
@@ -73,44 +45,38 @@ func WithDefaultConfig() *Config {
 type Swarm struct {
 	cfg                        *Config
 	log                        *slog.Logger
-	pieceCount                 int
-	peerMu                     sync.RWMutex
+	peerMut                    sync.RWMutex
 	peers                      map[netip.AddrPort]*Peer
-	admitPeerCh                chan netip.AddrPort
 	infoHash                   [sha1.Size]byte
 	clientID                   [sha1.Size]byte
 	stats                      *SwarmStats
 	cancel                     context.CancelFunc
-	closeOnce                  sync.Once
-	closed                     atomic.Bool
-	storage                    *storage.Store
 	scheduler                  *scheduler.PieceScheduler
-	refillPeersHook            func()
 	optimisticUnchokedPeerAddr netip.AddrPort
+	peerConnectCh              chan netip.AddrPort
+	requestMorePeerCh          chan struct{}
 }
 
 type SwarmStats struct {
-	TotalPeers       atomic.Uint32 // currently active peers in the map
-	ConnectingPeers  atomic.Uint32 // dial/handshake in progress
-	FailedConnection atomic.Uint32 // failed connection attempts
-	UnchokedPeers    atomic.Uint32 // peers we are not choking
-	InterestedPeers  atomic.Uint32 // peers we are interested in
-	UploadingTo      atomic.Uint32 // peer with >0 upload rate
-	DownloadingFrom  atomic.Uint32 // peer with >0 download rate
-
-	TotalDownloaded atomic.Uint64 // sum of all peer's download
-	TotalUploaded   atomic.Uint64 // sum of all peer's upload
-	DownloadRate    atomic.Uint64 // B/s aggregate across peers
-	UploadRate      atomic.Uint64 // B/s aggregate across peeres
+	TotalPeers       atomic.Uint32
+	ConnectingPeers  atomic.Uint32
+	FailedConnection atomic.Uint32
+	UnchokedPeers    atomic.Uint32
+	InterestedPeers  atomic.Uint32
+	UploadingTo      atomic.Uint32
+	DownloadingFrom  atomic.Uint32
+	TotalDownloaded  atomic.Uint64
+	TotalUploaded    atomic.Uint64
+	DownloadRate     atomic.Uint64
+	UploadRate       atomic.Uint64
 }
 
 type SwarmOpts struct {
-	Config     *Config
-	PieceCount int
-	Log        *slog.Logger
-	InfoHash   [sha1.Size]byte
-	ClientID   [sha1.Size]byte
-	Scheduler  *scheduler.PieceScheduler
+	Config    *Config
+	Log       *slog.Logger
+	InfoHash  [sha1.Size]byte
+	ClientID  [sha1.Size]byte
+	Scheduler *scheduler.PieceScheduler
 }
 
 type SwarmMetrics struct {
@@ -121,24 +87,22 @@ type SwarmMetrics struct {
 	InterestedPeers  uint32 `json:"interestedPeers"`
 	UploadingTo      uint32 `json:"uploadingTo"`
 	DownloadingFrom  uint32 `json:"downloadingFrom"`
-
-	TotalDownloaded uint64 `json:"totalDownloaded"`
-	TotalUploaded   uint64 `json:"totalUploaded"`
-	DownloadRate    uint64 `json:"downloadRate"`
-	UploadRate      uint64 `json:"uploadRate"`
+	TotalDownloaded  uint64 `json:"totalDownloaded"`
+	TotalUploaded    uint64 `json:"totalUploaded"`
+	DownloadRate     uint64 `json:"downloadRate"`
+	UploadRate       uint64 `json:"uploadRate"`
 }
 
 func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	return &Swarm{
-		cfg:         opts.Config,
-		infoHash:    opts.InfoHash,
-		clientID:    opts.ClientID,
-		pieceCount:  opts.PieceCount,
-		stats:       &SwarmStats{},
-		scheduler:   opts.Scheduler,
-		peers:       make(map[netip.AddrPort]*Peer),
-		admitPeerCh: make(chan netip.AddrPort, opts.Config.MaxPeers),
-		log:         opts.Log.With("src", "peer_swarm"),
+		cfg:           opts.Config,
+		infoHash:      opts.InfoHash,
+		clientID:      opts.ClientID,
+		stats:         &SwarmStats{},
+		scheduler:     opts.Scheduler,
+		peers:         make(map[netip.AddrPort]*Peer),
+		peerConnectCh: make(chan netip.AddrPort, opts.Config.MaxPeers),
+		log:           opts.Log.With("src", "peer_swarm"),
 	}, nil
 }
 
@@ -193,22 +157,13 @@ func (s *Swarm) Stats() SwarmMetrics {
 }
 
 func (s *Swarm) PeerMetrics() []PeerMetrics {
-	s.peerMu.RLock()
-	defer s.peerMu.RUnlock()
-
-	out := make([]PeerMetrics, 0, len(s.peers))
-	for _, p := range s.peers {
-		out = append(out, p.Stats())
-	}
+	out := make([]PeerMetrics, 0, s.peers.Count())
+	s.peers.Range(func(addr netip.AddrPort, peer *Peer) bool {
+		out = append(out, peer.Stats())
+		return true
+	})
 
 	return out
-}
-
-func (s *Swarm) Size() int {
-	s.peerMu.RLock()
-	defer s.peerMu.RUnlock()
-
-	return len(s.peers)
 }
 
 func (s *Swarm) AdmitPeers(addrs []netip.AddrPort) {

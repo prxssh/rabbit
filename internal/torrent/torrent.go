@@ -32,13 +32,13 @@ type Torrent struct {
 }
 
 func NewTorrent(clientID [sha1.Size]byte, data []byte, cfg *Config) (*Torrent, error) {
+	if cfg == nil {
+		cfg = WithDefaultConfig()
+	}
+
 	metainfo, err := meta.ParseMetainfo(data)
 	if err != nil {
 		return nil, err
-	}
-
-	if cfg == nil {
-		cfg = WithDefaultConfig()
 	}
 
 	torrent := &Torrent{
