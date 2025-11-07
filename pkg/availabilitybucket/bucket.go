@@ -60,7 +60,10 @@ func NewBucket(n, maxAvail int) *Bucket {
 		b.pos[i] = i
 		b.avail[i] = 0
 	}
-	b.setBit(0)
+
+	if n > 0 {
+		b.setBit(0)
+	}
 
 	return b
 }
