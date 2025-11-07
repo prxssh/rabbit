@@ -19,6 +19,7 @@
     interface TorrentItemData {
         id: number
         fileName: string
+        size: number
         torrentData: torrent.Torrent
         status: string
         progress: number

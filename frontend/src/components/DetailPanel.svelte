@@ -56,7 +56,7 @@
                             value={meta?.hash ? formatHash(meta.hash) : 'N/A'}
                             mono
                         />
-                        <InfoCard label="Size" value={formatBytes(torrentData?.size || 0)} />
+                        <InfoCard label="Size" value={formatBytes(torrentData?.metainfo?.size || 0)} />
                         <InfoCard
                             label="Piece Length"
                             value={info?.pieceLength ? formatBytes(info.pieceLength) : 'N/A'}
