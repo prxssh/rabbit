@@ -221,7 +221,7 @@ func (t *Tracker) RefillPeers() {
 	select {
 	case t.reannounceNow <- struct{}{}:
 	default:
-		t.log.Warn("reannounce queue filled; skipping")
+		t.logger.Warn("reannounce queue filled; skipping")
 	}
 }
 
@@ -258,7 +258,7 @@ func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*Announ
 			t.stats.CurrentSeeders.Store(resp.Seeders)
 			t.stats.CurrentLeechers.Store(resp.Leechers)
 
-			t.log.Info("announce success",
+			t.logger.Info("announce success",
 				"tier", tierIdx,
 				"url", u.String(),
 				"peers", len(resp.Peers),
@@ -269,7 +269,7 @@ func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*Announ
 			return resp, nil
 		}
 
-		t.log.Warn("announce tier exhausted", "tier", tierIdx)
+		t.logger.Warn("announce tier exhausted", "tier", tierIdx)
 	}
 
 	t.stats.FailedAnnounces.Add(1)
@@ -281,7 +281,7 @@ func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*Announ
 }
 
 func (t *Tracker) announceLoop(ctx context.Context) error {
-	l := t.log.With("component", "announce loop")
+	l := t.logger.With("component", "announce loop")
 	l.Debug("started")
 
 	consecutiveFailures := 0
@@ -332,13 +332,13 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 
 		case <-ticker.C:
 			if err := runOnce(); err != nil {
-				t.log.Error("failed to announce", "error", err.Error())
+				t.logger.Error("failed to announce", "error", err.Error())
 				return err
 			}
 
 		case <-t.reannounceNow:
 			if err := runOnce(); err != nil {
-				t.log.Error("failed to  reannounce", "error", err.Error())
+				t.logger.Error("failed to  reannounce", "error", err.Error())
 				return err
 			}
 		}
@@ -365,7 +365,7 @@ func (t *Tracker) promoteWithinTier(tierIdx, urlIdx int) {
 	copy(tier[1:urlIdx+1], tier[0:urlIdx])
 	tier[0] = u
 
-	t.log.Debug("announce promote",
+	t.logger.Debug("announce promote",
 		"tier", tierIdx,
 		"from", urlIdx,
 		"url", u.String(),
@@ -382,7 +382,7 @@ func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 		return tr, nil
 	}
 
-	log := t.log.With("scheme", u.Scheme, "host", u.Host, "path", u.EscapedPath())
+	log := t.logger.With("scheme", u.Scheme, "host", u.Host, "path", u.EscapedPath())
 
 	var (
 		tracker TrackerProtocol
@@ -406,7 +406,7 @@ func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 	t.trackers[key] = tracker
 	t.mu.Unlock()
 
-	t.log.Debug("tracker cached")
+	t.logger.Debug("tracker cached")
 
 	return tracker, nil
 }
