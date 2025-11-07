@@ -61,8 +61,8 @@ func PieceOffsetBounds(index uint32, size uint64, pieceLen uint32) (uint32, uint
 }
 
 // PieceIndexForOffset maps a stream offset to its piece index.
-func PieceIndexForOffset(offset, size, pieceLen uint32) (uint32, bool) {
-	if offset < 0 || offset >= size || pieceLen <= 0 {
+func PieceIndexForOffset(offset uint32, size uint64, pieceLen uint32) (uint32, bool) {
+	if offset < 0 || uint64(offset) >= size || pieceLen <= 0 {
 		return 0, false
 	}
 
