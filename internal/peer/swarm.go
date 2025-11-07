@@ -15,16 +15,16 @@ import (
 )
 
 type Config struct {
+	MaxPeers                  uint8
+	UploadSlots               uint8
+	PeerOutboxBacklog         uint8
 	ReadTimeout               time.Duration
 	WriteTimeout              time.Duration
 	DialTimeout               time.Duration
-	MaxPeers                  int
-	UploadSlots               int
 	RechokeInterval           time.Duration
 	OptimisticUnchokeInterval time.Duration
 	PeerHeartbeatInterval     time.Duration
 	PeerInactivityDuration    time.Duration
-	PeerOutboxBacklog         int
 }
 
 func WithDefaultConfig() *Config {
@@ -44,17 +44,17 @@ func WithDefaultConfig() *Config {
 
 type Swarm struct {
 	cfg                        *Config
-	log                        *slog.Logger
+	logger                     *slog.Logger
 	peerMut                    sync.RWMutex
 	peers                      map[netip.AddrPort]*Peer
 	infoHash                   [sha1.Size]byte
 	clientID                   [sha1.Size]byte
+	isSeeder                   bool
 	stats                      *SwarmStats
 	cancel                     context.CancelFunc
-	scheduler                  *scheduler.PieceScheduler
+	scheduler                  *scheduler.Scheduler
 	optimisticUnchokedPeerAddr netip.AddrPort
 	peerConnectCh              chan netip.AddrPort
-	requestMorePeerCh          chan struct{}
 }
 
 type SwarmStats struct {
@@ -73,10 +73,11 @@ type SwarmStats struct {
 
 type SwarmOpts struct {
 	Config    *Config
-	Log       *slog.Logger
+	Logger    *slog.Logger
 	InfoHash  [sha1.Size]byte
 	ClientID  [sha1.Size]byte
-	Scheduler *scheduler.PieceScheduler
+	Scheduler *scheduler.Scheduler
+	IsSeeder  bool
 }
 
 type SwarmMetrics struct {
@@ -102,41 +103,26 @@ func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 		scheduler:     opts.Scheduler,
 		peers:         make(map[netip.AddrPort]*Peer),
 		peerConnectCh: make(chan netip.AddrPort, opts.Config.MaxPeers),
-		log:           opts.Log.With("src", "peer_swarm"),
+		logger:        opts.Logger.With("source", "peer_swarm"),
+		isSeeder:      opts.IsSeeder,
 	}, nil
 }
 
-func (s *Swarm) RegisterRefillPeerHook(hook func()) {
-	s.refillPeersHook = hook
-}
-
+// TODO: errgroup
 func (s *Swarm) Run(ctx context.Context) error {
-	defer s.Close()
-
-	ctx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-
 	var wg sync.WaitGroup
 
 	wg.Go(func() { s.maintenanceLoop(ctx) })
-	wg.Go(func() { s.admitPeersLoop(ctx) })
 	wg.Go(func() { s.statsLoop(ctx) })
-	wg.Go(func() { s.leecherChokeLoop(ctx) })
-	wg.Go(func() { s.seederChokeLoop(ctx) })
+	wg.Go(func() { s.chokeLoop(ctx) })
+
+	for dialWorker := 0; dialWorker < 10; dialWorker++ {
+		wg.Go(func() { s.peerDialerLoop(ctx) })
+	}
+
 	wg.Wait()
 
 	return nil
-}
-
-func (s *Swarm) Close() {
-	s.closeOnce.Do(func() {
-		s.closed.Store(true)
-		s.cancel()
-
-		close(s.admitPeerCh)
-
-		s.log.Debug("stopped")
-	})
 }
 
 func (s *Swarm) Stats() SwarmMetrics {
@@ -157,55 +143,51 @@ func (s *Swarm) Stats() SwarmMetrics {
 }
 
 func (s *Swarm) PeerMetrics() []PeerMetrics {
-	out := make([]PeerMetrics, 0, s.peers.Count())
-	s.peers.Range(func(addr netip.AddrPort, peer *Peer) bool {
-		out = append(out, peer.Stats())
-		return true
-	})
+	s.peerMut.RLock()
+	defer s.peerMut.RUnlock()
 
-	return out
+	metrics := make([]PeerMetrics, 0, len(s.peers))
+	for _, peer := range s.peers {
+		metrics = append(metrics, peer.Stats())
+	}
+
+	return metrics
 }
 
 func (s *Swarm) AdmitPeers(addrs []netip.AddrPort) {
 	for _, addr := range addrs {
 		select {
-		case s.admitPeerCh <- addr:
+		case s.peerConnectCh <- addr:
 		default:
-			s.log.Warn("admit peer queue full; dropping", "addr", addr)
+			s.logger.Warn("admit peer queue full; dropping", "addr", addr)
 		}
 	}
 }
 
-func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error) {
-	if s.closed.Load() {
-		return nil, nil
-	}
-
-	s.peerMu.RLock()
+func (s *Swarm) addPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error) {
+	s.peerMut.RLock()
 	_, dup := s.peers[addr]
 	totalPeers := len(s.peers)
-	s.peerMu.RUnlock()
+	s.peerMut.RUnlock()
 
 	if dup {
 		return nil, nil
 	}
 
-	if totalPeers >= s.cfg.MaxPeers {
+	if totalPeers >= int(s.cfg.MaxPeers) {
 		return nil, nil
 	}
 
 	s.stats.ConnectingPeers.Add(1)
 
-	// TODO: cleanup queue when peer connection fails
-	peer, err := NewPeer(ctx, addr, &peerOpts{
+	peer, err := newPeer(ctx, addr, &peerOpts{
 		infoHash:   s.infoHash,
 		clientID:   s.clientID,
 		config:     s.cfg,
-		log:        s.log,
-		eventQueue: s.scheduler.GetEventQueue(),
+		logger:     s.logger,
+		eventQueue: s.scheduler.GetPeerEventQueue(),
 		workQueue:  s.scheduler.GetPeerWorkQueue(addr),
 	})
-
 	s.stats.ConnectingPeers.Add(^uint32(0))
 
 	if err != nil {
@@ -213,38 +195,37 @@ func (s *Swarm) AddPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error)
 		return nil, err
 	}
 
-	s.peerMu.Lock()
+	s.peerMut.Lock()
 	s.peers[peer.addr] = peer
-	s.peerMu.Unlock()
+	s.peerMut.Unlock()
+
 	s.stats.TotalPeers.Add(1)
 
 	return peer, nil
 }
 
-func (s *Swarm) RemovePeer(addr netip.AddrPort) {
-	s.peerMu.Lock()
-	peer, exists := s.peers[addr]
-	if !exists {
-		s.peerMu.Unlock()
+func (s *Swarm) removePeer(addr netip.AddrPort) {
+	s.peerMut.Lock()
+	if _, exists := s.peers[addr]; !exists {
+		s.peerMut.Unlock()
 		return
 	}
 	delete(s.peers, addr)
-	s.peerMu.Unlock()
+	s.peerMut.Unlock()
 
-	peer.Close()
 	s.stats.TotalPeers.Add(^uint32(0))
 }
 
 func (s *Swarm) GetPeer(addr netip.AddrPort) (*Peer, bool) {
-	s.peerMu.RLock()
-	defer s.peerMu.RUnlock()
+	s.peerMut.RLock()
+	defer s.peerMut.RUnlock()
 
 	peer, ok := s.peers[addr]
 	return peer, ok
 }
 
 func (s *Swarm) maintenanceLoop(ctx context.Context) error {
-	l := s.log.With("component", "purge inactive peers loop")
+	l := s.logger.With("component", "maintenance loop")
 	l.Debug("started")
 
 	ticker := time.NewTicker(5 * time.Second)
@@ -253,83 +234,65 @@ func (s *Swarm) maintenanceLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done, exiting", "error", ctx.Err())
 			return nil
 
 		case <-ticker.C:
 			maxIdle := s.cfg.PeerInactivityDuration
 			var inactivePeerAddrs []netip.AddrPort
 
-			s.peerMu.RLock()
+			s.peerMut.RLock()
 			for addr, peer := range s.peers {
 				if peer.Idleness() > maxIdle {
 					inactivePeerAddrs = append(inactivePeerAddrs, addr)
 				}
 			}
-			s.peerMu.RUnlock()
+			s.peerMut.RUnlock()
 
 			for _, addr := range inactivePeerAddrs {
-				s.RemovePeer(addr)
+				s.removePeer(addr)
 			}
 
-			if s.stats.TotalPeers.Load() < 6 && s.refillPeersHook != nil {
-				l.Debug("peers low; requesting more peers")
-				s.refillPeersHook()
+			n := len(inactivePeerAddrs)
+			if n > 0 {
+				l.Info("removed inactive peers", "count", n)
 			}
-
-			l.Debug("purged inactive peers", "removed", len(inactivePeerAddrs))
 		}
 	}
 }
 
-func (s *Swarm) admitPeersLoop(ctx context.Context) error {
-	l := s.log.With("component", "admit peers loop")
+func (s *Swarm) peerDialerLoop(ctx context.Context) {
+	l := s.logger.With("component", "peer dialer loop")
 	l.Debug("started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done, exiting", "error", ctx.Err().Error())
-			return nil
+			return
 
-		case peerAddr, ok := <-s.admitPeerCh:
+		case peerAddr, ok := <-s.peerConnectCh:
 			if !ok {
-				l.Error("admit peers queue closed, existing")
-				return nil
+				return
 			}
 
-			go func(addr netip.AddrPort) {
-				p, err := s.AddPeer(ctx, addr)
-				if err != nil {
-					l.Debug(
-						"peer connection failed",
-						"addr", addr,
-						"error", err.Error(),
-					)
-					return
-				}
+			peer, err := s.addPeer(ctx, peerAddr)
+			if err != nil {
+				l.Debug("peer connection failed", "addr", peerAddr, "error", err.Error())
+				continue
+			}
+			if peer == nil { // duplicate
+				continue
+			}
 
-				if p == nil {
-					return
-				}
-
-				defer s.RemovePeer(p.addr)
-
-				if err := p.Run(ctx); err != nil {
-					l.Debug(
-						"peer failed to run",
-						"addr", p.addr,
-						"error", err.Error(),
-					)
-					return
-				}
-			}(peerAddr)
+			go func(p *Peer) {
+				defer s.removePeer(p.addr)
+				p.Run(ctx)
+			}(peer)
 		}
 	}
 }
 
 func (s *Swarm) statsLoop(ctx context.Context) error {
-	l := s.log.With("component", "stats loop")
+	l := s.logger.With("component", "stats loop")
 	l.Debug("started")
 
 	ticker := time.NewTicker(time.Second)
@@ -345,7 +308,7 @@ func (s *Swarm) statsLoop(ctx context.Context) error {
 			var totUp, totDown, upRate, downRate uint64
 			var unchoked, interested, uploadingTo, downloadingFrom uint32
 
-			s.peerMu.RLock()
+			s.peerMut.RLock()
 			for _, peer := range s.peers {
 				totUp += peer.stats.Uploaded.Load()
 				totDown += peer.stats.Downloaded.Load()
@@ -367,7 +330,7 @@ func (s *Swarm) statsLoop(ctx context.Context) error {
 					downloadingFrom++
 				}
 			}
-			s.peerMu.RUnlock()
+			s.peerMut.RUnlock()
 
 			s.stats.TotalUploaded.Store(totUp)
 			s.stats.TotalDownloaded.Store(totDown)
@@ -381,30 +344,8 @@ func (s *Swarm) statsLoop(ctx context.Context) error {
 	}
 }
 
-func (s *Swarm) leecherChokeLoop(ctx context.Context) {
-	l := s.log.With("component", "leecher_choke_loop")
-	l.Debug("started")
-
-	normalChokeTicker := time.NewTicker(10 * time.Second)
-	defer normalChokeTicker.Stop()
-
-	optimisticChokeTicker := time.NewTicker(30 * time.Second)
-	defer optimisticChokeTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-normalChokeTicker.C:
-			s.recalculateRegularUnchokes(ctx, false)
-		case <-optimisticChokeTicker.C:
-			s.recalculateOptimisticUnchoke(ctx)
-		}
-	}
-}
-
-func (s *Swarm) seederChokeLoop(ctx context.Context) {
-	l := s.log.With("component", "seeder_choke_loop")
+func (s *Swarm) chokeLoop(ctx context.Context) {
+	l := s.logger.With("source", "leecher choke loop")
 	l.Debug("started")
 
 	normalChokeTicker := time.NewTicker(s.cfg.RechokeInterval)
@@ -417,27 +358,29 @@ func (s *Swarm) seederChokeLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+
 		case <-normalChokeTicker.C:
-			s.recalculateRegularUnchokes(ctx, true)
+			s.recalculateRegularUnchokes(ctx)
+
 		case <-optimisticChokeTicker.C:
 			s.recalculateOptimisticUnchoke(ctx)
 		}
 	}
 }
 
-func (s *Swarm) recalculateRegularUnchokes(ctx context.Context, isSeeder bool) {
+func (s *Swarm) recalculateRegularUnchokes(ctx context.Context) {
 	var candidates []*Peer
 
-	s.peerMu.RLock()
+	s.peerMut.RLock()
 	for _, peer := range s.peers {
 		if peer.AmInterested() {
 			candidates = append(candidates, peer)
 		}
 	}
-	s.peerMu.RUnlock()
+	s.peerMut.RUnlock()
 
 	sort.Slice(candidates, func(i, j int) bool {
-		if isSeeder {
+		if s.isSeeder {
 			return candidates[i].stats.UploadRate.Load() > candidates[j].stats.UploadRate.Load()
 		}
 
@@ -445,11 +388,11 @@ func (s *Swarm) recalculateRegularUnchokes(ctx context.Context, isSeeder bool) {
 	})
 
 	newUnchokes := make(map[netip.AddrPort]struct{})
-	for i := 0; i < len(candidates) && i < s.cfg.UploadSlots; i++ {
+	for i := 0; i < len(candidates) && i < int(s.cfg.UploadSlots); i++ {
 		newUnchokes[candidates[i].addr] = struct{}{}
 	}
 
-	s.peerMu.Lock()
+	s.peerMut.Lock()
 	for _, peer := range s.peers {
 		_, isTopPeer := newUnchokes[peer.addr]
 		isOptimistic := (peer.addr == s.optimisticUnchokedPeerAddr)
@@ -464,19 +407,19 @@ func (s *Swarm) recalculateRegularUnchokes(ctx context.Context, isSeeder bool) {
 			}
 		}
 	}
-	s.peerMu.Unlock()
+	s.peerMut.Unlock()
 }
 
 func (s *Swarm) recalculateOptimisticUnchoke(ctx context.Context) {
 	var candidates []*Peer
 
-	s.peerMu.RLock()
+	s.peerMut.RLock()
 	for _, peer := range s.peers {
 		if peer.PeerInterested() && peer.AmChoking() {
 			candidates = append(candidates, peer)
 		}
 	}
-	s.peerMu.RUnlock()
+	s.peerMut.RUnlock()
 
 	if len(candidates) == 0 {
 		s.optimisticUnchokedPeerAddr = netip.AddrPort{}

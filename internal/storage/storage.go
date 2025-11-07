@@ -118,8 +118,6 @@ func (s *Store) Run(ctx context.Context) error {
 	g.Go(func() error { return s.processPiecesLoop(gctx) })
 	g.Go(func() error { return s.writeToDiskLoop(gctx) })
 
-	s.log.Info("workers started")
-
 	return g.Wait()
 }
 
@@ -291,7 +289,10 @@ func (s *Store) readPiece(index int, data []byte) error {
 		offsetInFile := overlapStart - fileAbsStart
 		offsetInData := overlapStart - pieceAbsStart
 
-		n, err := file.f.ReadAt(data[offsetInData:offsetInData+readLen], int64(offsetInFile))
+		n, err := file.f.ReadAt(
+			data[offsetInData:offsetInData+readLen],
+			int64(offsetInFile),
+		)
 		if err != nil {
 			return fmt.Errorf("file read error for %s: %w", file.path, err)
 		}

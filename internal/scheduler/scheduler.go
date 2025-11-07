@@ -77,7 +77,7 @@ type Scheduler struct {
 type Opts struct {
 	Logger   *slog.Logger
 	Config   *Config
-	MaxPeers int32
+	MaxPeers uint8
 }
 
 func NewScheduler(
@@ -111,7 +111,8 @@ func NewScheduler(
 	}
 }
 
-func (s *Scheduler) Run(ctx context.Context) {
+// TODO: errgroup
+func (s *Scheduler) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 
 	wg.Go(func() { s.listenPeerEvent(ctx) })
@@ -119,6 +120,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 	wg.Go(func() { s.assignPeerWork(ctx) })
 
 	wg.Wait()
+
+	return nil
 }
 
 func (s *Scheduler) GetPeerEventQueue() chan<- Event {
