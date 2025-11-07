@@ -10,6 +10,7 @@ import (
 	"github.com/prxssh/rabbit/internal/piece"
 	"github.com/prxssh/rabbit/pkg/availabilitybucket"
 	"github.com/prxssh/rabbit/pkg/bitfield"
+	"golang.org/x/sync/errgroup"
 )
 
 type Config struct {
@@ -111,17 +112,14 @@ func NewScheduler(
 	}
 }
 
-// TODO: errgroup
 func (s *Scheduler) Run(ctx context.Context) error {
-	var wg sync.WaitGroup
+	g, gctx := errgroup.WithContext(ctx)
 
-	wg.Go(func() { s.listenPeerEvent(ctx) })
-	wg.Go(func() { s.listenVerifiedPieces(ctx) })
-	wg.Go(func() { s.assignPeerWork(ctx) })
+	g.Go(func() error { return s.listenPeerEvent(gctx) })
+	g.Go(func() error { return s.listenVerifiedPieces(gctx) })
+	g.Go(func() error { return s.assignPeerWork(gctx) })
 
-	wg.Wait()
-
-	return nil
+	return g.Wait()
 }
 
 func (s *Scheduler) GetPeerEventQueue() chan<- Event {
@@ -137,30 +135,31 @@ func (s *Scheduler) GetPeerWorkQueue(addr netip.AddrPort) <-chan Event {
 	}
 
 	peerState := &peerState{
-		inflightRequests: 0,
-		addr:             addr,
-		choking:          true,
-		work:             make(chan Event),
-		pieces:           bitfield.New(int(s.pieceManager.PieceCount())),
-		blockAssignments: make(map[uint64]struct{}),
+		inflightRequests:    0,
+		addr:                addr,
+		choking:             true,
+		maxInflightRequests: 50,
+		work:                make(chan Event),
+		pieces:              bitfield.New(int(s.pieceManager.PieceCount())),
+		blockAssignments:    make(map[uint64]struct{}),
 	}
 	s.peers[addr] = peerState
 
 	return peerState.work
 }
 
-func (s *Scheduler) listenPeerEvent(ctx context.Context) {
+func (s *Scheduler) listenPeerEvent(ctx context.Context) error {
 	logger := s.logger.With("function", "peer event loop")
 	logger.Debug("started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 
 		case event, ok := <-s.peerEvent:
 			if !ok {
-				return
+				return nil
 			}
 
 			s.handlePeerEvent(event)
@@ -168,18 +167,18 @@ func (s *Scheduler) listenPeerEvent(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) listenVerifiedPieces(ctx context.Context) {
+func (s *Scheduler) listenVerifiedPieces(ctx context.Context) error {
 	logger := s.logger.With("function", "listen verified pieces")
 	logger.Debug("started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 
 		case result, ok := <-s.pieceResult:
 			if !ok {
-				return
+				return nil
 			}
 
 			s.pieceManager.MarkPieceVerified(result.PieceIdx, result.Success)
@@ -190,8 +189,8 @@ func (s *Scheduler) listenVerifiedPieces(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) assignPeerWork(ctx context.Context) {
-	logger := s.logger.With("function", "work assignment loop")
+func (s *Scheduler) assignPeerWork(ctx context.Context) error {
+	logger := s.logger.With("source", "work assignment loop")
 	logger.Debug("started")
 
 	ticker := time.NewTicker(1 * time.Second)
@@ -200,10 +199,10 @@ func (s *Scheduler) assignPeerWork(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 
 		case <-ticker.C:
-			candidates := make([]netip.AddrPort, len(s.peers))
+			candidates := make([]netip.AddrPort, 0, len(s.peers))
 
 			s.peerMut.RLock()
 			for addr, peer := range s.peers {
@@ -211,7 +210,11 @@ func (s *Scheduler) assignPeerWork(ctx context.Context) {
 					candidates = append(candidates, addr)
 				}
 			}
-			defer s.peerMut.RUnlock()
+			s.peerMut.RUnlock()
+
+			for _, candidatePeer := range candidates {
+				s.nextForPeer(candidatePeer)
+			}
 		}
 	}
 }
@@ -257,6 +260,7 @@ func (s *Scheduler) assignBlockToPeer(peer *peerState, block *piece.BlockInfo) {
 
 	select {
 	case peer.work <- NewRequestEvent(peer.addr, block.PieceIdx, block.Begin, block.Length):
+		s.logger.Debug("sent work to peer", "peer", peer.addr)
 
 	default:
 		s.logger.Warn("peer work queue full; dropping request", "peer", peer.addr)

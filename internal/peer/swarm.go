@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prxssh/rabbit/internal/scheduler"
+	"golang.org/x/sync/errgroup"
 )
 
 type Config struct {
@@ -108,21 +109,18 @@ func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 	}, nil
 }
 
-// TODO: errgroup
 func (s *Swarm) Run(ctx context.Context) error {
-	var wg sync.WaitGroup
+	g, gctx := errgroup.WithContext(ctx)
 
-	wg.Go(func() { s.maintenanceLoop(ctx) })
-	wg.Go(func() { s.statsLoop(ctx) })
-	wg.Go(func() { s.chokeLoop(ctx) })
+	g.Go(func() error { return s.maintenanceLoop(gctx) })
+	g.Go(func() error { return s.statsLoop(ctx) })
+	g.Go(func() error { return s.chokeLoop(ctx) })
 
 	for dialWorker := 0; dialWorker < 10; dialWorker++ {
-		wg.Go(func() { s.peerDialerLoop(ctx) })
+		g.Go(func() error { return s.peerDialerLoop(ctx) })
 	}
 
-	wg.Wait()
-
-	return nil
+	return g.Wait()
 }
 
 func (s *Swarm) GetPeerConnectQueue() chan<- netip.AddrPort {
@@ -264,28 +262,26 @@ func (s *Swarm) maintenanceLoop(ctx context.Context) error {
 	}
 }
 
-func (s *Swarm) peerDialerLoop(ctx context.Context) {
+func (s *Swarm) peerDialerLoop(ctx context.Context) error {
 	l := s.logger.With("component", "peer dialer loop")
 	l.Debug("started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 
 		case peerAddr, ok := <-s.peerConnectCh:
 			if !ok {
-				return
+				return nil
 			}
 
 			peer, err := s.addPeer(ctx, peerAddr)
 			if err != nil {
 				l.Debug(
 					"peer connection failed",
-					"addr",
-					peerAddr,
-					"error",
-					err.Error(),
+					"addr", peerAddr,
+					"error", err.Error(),
 				)
 				continue
 			}
@@ -354,7 +350,7 @@ func (s *Swarm) statsLoop(ctx context.Context) error {
 	}
 }
 
-func (s *Swarm) chokeLoop(ctx context.Context) {
+func (s *Swarm) chokeLoop(ctx context.Context) error {
 	l := s.logger.With("source", "leecher choke loop")
 	l.Debug("started")
 
@@ -367,7 +363,7 @@ func (s *Swarm) chokeLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 
 		case <-normalChokeTicker.C:
 			s.recalculateRegularUnchokes(ctx)
