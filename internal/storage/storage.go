@@ -252,7 +252,7 @@ func (s *Store) writePiece(piece *completePiece) error {
 
 		n, err := file.f.WriteAt(
 			piece.data[offsetInData:offsetInData+writeLen],
-			offsetInFile,
+			int64(offsetInFile),
 		)
 		if err != nil {
 			return fmt.Errorf("file write error for %s: %w", file.path, err)
