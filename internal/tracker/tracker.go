@@ -123,22 +123,21 @@ type TrackerMetrics struct {
 }
 
 type Tracker struct {
-	cfg               *Config
-	tiers             [][]*url.URL
-	mu                sync.Mutex
-	trackers          map[string]TrackerProtocol
-	logger            *slog.Logger
-	stats             *Stats
-	reannounceNow     chan struct{}
-	onAnnounceStart   func() *AnnounceParams
-	onAnnounceSuccess func(addrs []netip.AddrPort)
+	cfg             *Config
+	tiers           [][]*url.URL
+	mu              sync.Mutex
+	trackers        map[string]TrackerProtocol
+	logger          *slog.Logger
+	stats           *Stats
+	peerAddrQueue   chan<- netip.AddrPort
+	onAnnounceStart func() *AnnounceParams
 }
 
 type TrackerOpts struct {
-	OnAnnounceStart   func() *AnnounceParams
-	OnAnnounceSuccess func(addrs []netip.AddrPort)
-	Logger            *slog.Logger
-	Config            *Config
+	OnAnnounceStart func() *AnnounceParams
+	PeerAddrQueue   chan<- netip.AddrPort
+	Logger          *slog.Logger
+	Config          *Config
 }
 
 func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*Tracker, error) {
@@ -147,9 +146,6 @@ func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*T
 	}
 	if opts.OnAnnounceStart == nil {
 		return nil, errors.New("OnAnnounceStart hook missing")
-	}
-	if opts.OnAnnounceSuccess == nil {
-		return nil, errors.New("OnAnnounceSuccess hook missing")
 	}
 
 	tiers, err := buildAnnounceURLs(announce, announceList)
@@ -169,17 +165,16 @@ func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*T
 		})
 	}
 
-	log := opts.Logger.With("component", "tracker", "tiers", len(tiers))
+	log := opts.Logger.With("souce", "tracker", "tiers", len(tiers))
 
 	return &Tracker{
-		cfg:               opts.Config,
-		logger:            log,
-		tiers:             tiers,
-		stats:             &Stats{},
-		reannounceNow:     make(chan struct{}, 1),
-		onAnnounceStart:   opts.OnAnnounceStart,
-		onAnnounceSuccess: opts.OnAnnounceSuccess,
-		trackers:          make(map[string]TrackerProtocol),
+		cfg:             opts.Config,
+		logger:          log,
+		tiers:           tiers,
+		stats:           &Stats{},
+		peerAddrQueue:   opts.PeerAddrQueue,
+		onAnnounceStart: opts.OnAnnounceStart,
+		trackers:        make(map[string]TrackerProtocol),
 	}, nil
 }
 
@@ -214,14 +209,6 @@ func (t *Tracker) Stats() TrackerMetrics {
 		CurrentLeechers:     s.CurrentLeechers.Load(),
 		LastAnnounce:        lastAnnT,
 		LastSuccess:         lastSucT,
-	}
-}
-
-func (t *Tracker) RefillPeers() {
-	select {
-	case t.reannounceNow <- struct{}{}:
-	default:
-		t.logger.Warn("reannounce queue filled; skipping")
 	}
 }
 
@@ -306,7 +293,15 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 		}
 
 		consecutiveFailures = 0
-		t.onAnnounceSuccess(resp.Peers)
+
+		for _, peer := range resp.Peers {
+			select {
+			case t.peerAddrQueue <- peer:
+
+			default:
+				l.Debug("peer addr queue full; dropping")
+			}
+		}
 
 		ticker.Reset(getNextAnnounceInterval(
 			resp,
@@ -336,11 +331,6 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 				return err
 			}
 
-		case <-t.reannounceNow:
-			if err := runOnce(); err != nil {
-				t.logger.Error("failed to  reannounce", "error", err.Error())
-				return err
-			}
 		}
 	}
 }

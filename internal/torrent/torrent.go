@@ -17,7 +17,7 @@ import (
 )
 
 type Torrent struct {
-	Metainfo *meta.Metainfo
+	Metainfo *meta.Metainfo `json:"metainfo"`
 
 	clientID     [sha1.Size]byte
 	cfg          *Config
@@ -72,32 +72,39 @@ func NewTorrent(clientID [sha1.Size]byte, data []byte, cfg *Config) (*Torrent, e
 		Logger:    logger,
 		Scheduler: scheduler,
 		InfoHash:  metainfo.InfoHash,
+		ClientID:  clientID,
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	torrent := &Torrent{
+		Metainfo:     metainfo,
+		clientID:     clientID,
+		cfg:          cfg,
+		logger:       logger,
+		pieceManager: pieceManager,
+		scheduler:    scheduler,
+		peerManager:  peerManager,
+		storage:      storage,
 	}
 
 	tracker, err := tracker.NewTracker(
 		metainfo.Announce,
 		metainfo.AnnounceList,
 		&tracker.TrackerOpts{
-			Config: cfg.Tracker,
-			Logger: logger,
+			Config:          cfg.Tracker,
+			Logger:          logger,
+			PeerAddrQueue:   peerManager.GetPeerConnectQueue(),
+			OnAnnounceStart: torrent.buildAnnounceParams,
 		},
 	)
 	if err != nil {
 		return nil, err
 	}
+	torrent.tracker = tracker
 
-	return &Torrent{
-		clientID:     clientID,
-		cfg:          cfg,
-		logger:       logger,
-		tracker:      tracker,
-		pieceManager: pieceManager,
-		scheduler:    scheduler,
-		peerManager:  peerManager,
-	}, nil
+	return torrent, nil
 }
 
 func (t *Torrent) Run(ctx context.Context) error {
