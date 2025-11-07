@@ -4,7 +4,6 @@
     import { formatBytes } from '../lib/utils'
 
     export let torrentData: torrent.Torrent | undefined
-    export let size: number
     export let fileName: string
     export let progress: number
     export let downloadSpeed: string

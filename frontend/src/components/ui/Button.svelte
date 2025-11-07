@@ -3,9 +3,10 @@
     export let size: 'sm' | 'md' | 'lg' = 'md'
     export let disabled = false
     export let type: 'button' | 'submit' = 'button'
+    export let style: string = ''
 </script>
 
-<button {type} {disabled} class="btn btn-{variant} btn-{size}" on:click>
+<button {type} {disabled} {style} class="btn btn-{variant} btn-{size}" on:click>
     <slot />
 </button>
 

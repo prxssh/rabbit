@@ -141,57 +141,31 @@
                         </div>
 
                         <div class="field">
-                            <label for="maxInflight">Max Inflight Requests Per Peer</label>
-                            <input
-                                id="maxInflight"
-                                type="number"
-                                bind:value={config.Scheduler.MaxInflightRequestsPerPeer}
-                                min="1"
-                                max="100"
-                            />
-                            <span class="hint"
-                                >Maximum concurrent requests per peer (default: 32)</span
-                            >
-                        </div>
-
-                        <div class="field">
-                            <label for="minInflight">Min Inflight Requests Per Peer</label>
-                            <input
-                                id="minInflight"
-                                type="number"
-                                bind:value={config.Scheduler.MinInflightRequestsPerPeer}
-                                min="1"
-                                max="50"
-                            />
-                            <span class="hint"
-                                >Minimum requests to keep pipeline full (default: 4)</span
-                            >
-                        </div>
-
-                        <div class="field">
-                            <label for="endgameThreshold">Endgame Threshold</label>
+                            <label for="endgameThreshold">Endgame Threshold (%)</label>
                             <input
                                 id="endgameThreshold"
                                 type="number"
                                 bind:value={config.Scheduler.EndgameThreshold}
                                 min="1"
-                                max="100"
+                                max="20"
                             />
                             <span class="hint"
-                                >Remaining blocks to trigger endgame mode (default: 30)</span
+                                >Percentage of remaining pieces to trigger endgame mode (default: 5%)</span
                             >
                         </div>
 
                         <div class="field">
-                            <label for="maxRequestBacklog">Max Request Backlog</label>
+                            <label for="endgameDuplicates">Endgame Duplicate Requests</label>
                             <input
-                                id="maxRequestBacklog"
+                                id="endgameDuplicates"
                                 type="number"
-                                bind:value={config.Scheduler.MaxRequestBacklog}
-                                min="10"
-                                max="500"
+                                bind:value={config.Scheduler.EndgameDuplicatePerBlock}
+                                min="1"
+                                max="10"
                             />
-                            <span class="hint">Work queue size per peer (default: 100)</span>
+                            <span class="hint"
+                                >Maximum duplicate requests per block in endgame (default: 5)</span
+                            >
                         </div>
                     </div>
                 {/if}

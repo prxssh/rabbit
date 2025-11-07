@@ -51,6 +51,7 @@ func NewTorrent(clientID [sha1.Size]byte, data []byte, cfg *Config) (*Torrent, e
 		metainfo.Info.Pieces,
 		metainfo.Info.PieceLength,
 		metainfo.Size,
+		logger,
 	)
 	if err != nil {
 		return nil, err
@@ -130,17 +131,24 @@ type Stats struct {
 	tracker.TrackerMetrics
 	Progress    float64            `json:"progress"`
 	Peers       []peer.PeerMetrics `json:"peers"`
-	PieceStates []piece.Status     `json:"pieceStates"`
+	PieceStates []int              `json:"pieceStates"`
 }
 
 func (t *Torrent) GetStats() *Stats {
 	swarmStats := t.peerManager.Stats()
 	trackerStats := t.tracker.Stats()
 
+	// Get piece statuses and convert to []int for JSON marshaling
+	rawStates := t.pieceManager.PieceStatus()
+	pieceStates := make([]int, len(rawStates))
+	for i, status := range rawStates {
+		pieceStates[i] = int(status)
+	}
+
 	s := &Stats{
 		Progress:    0.0,
 		Peers:       t.peerManager.PeerMetrics(),
-		PieceStates: t.pieceManager.PieceStatus(),
+		PieceStates: pieceStates,
 	}
 	s.SwarmMetrics = swarmStats
 	s.TrackerMetrics = trackerStats
@@ -148,7 +156,7 @@ func (t *Torrent) GetStats() *Stats {
 	if total := len(s.PieceStates); total > 0 {
 		completed := 0
 		for _, st := range s.PieceStates {
-			if st == piece.StatusDone {
+			if st == int(piece.StatusDone) {
 				completed++
 			}
 		}
@@ -167,6 +175,12 @@ func (t *Torrent) UpdateConfig(cfg *Config) {
 	}
 
 	t.cfg = cfg
+
+	// Update scheduler config (handles strategy changes)
+	if cfg.Scheduler != nil {
+		t.scheduler.UpdateConfig(cfg.Scheduler)
+	}
+
 	t.logger.Info("torrent configuration updated")
 }
 

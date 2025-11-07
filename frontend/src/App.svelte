@@ -115,7 +115,21 @@
                             if (selectedTorrentId === torrent.id) {
                                 peers = stats.peers || []
                                 // Force a new array reference to trigger Svelte reactivity
-                                pieceStates = (stats.pieceStates || []).slice()
+                                const rawPieceStates = stats.pieceStates
+                                console.log('Raw pieceStates type:', typeof rawPieceStates, 'isArray:', Array.isArray(rawPieceStates), 'value:', rawPieceStates)
+
+                                if (Array.isArray(rawPieceStates)) {
+                                    pieceStates = rawPieceStates.slice()
+                                    console.log('Received pieceStates:', pieceStates.length, 'pieces')
+                                    console.log('Piece statuses breakdown:', {
+                                        done: pieceStates.filter((s: number) => s === 2).length,
+                                        inflight: pieceStates.filter((s: number) => s === 1).length,
+                                        want: pieceStates.filter((s: number) => s === 0).length
+                                    })
+                                } else {
+                                    pieceStates = []
+                                    console.warn('pieceStates is not an array, got:', rawPieceStates)
+                                }
                                 selectedStats = stats
                             }
 
@@ -166,6 +180,7 @@
             const newTorrent = {
                 id: Date.now(),
                 fileName: file.name,
+                size: result.metainfo?.size || 0,
                 torrentData: result,
                 status: 'downloading',
                 progress: 0,
@@ -223,7 +238,7 @@
         selectedTorrentId = selectedTorrentId === id ? null : id
         if (selectedTorrentId) {
             const torrent = torrents.find((t) => t.id === selectedTorrentId)
-            if (torrent) {
+            if (torrent && torrent.torrentData?.metainfo?.info?.pieces?.length) {
                 pieceStates = new Array(torrent.torrentData.metainfo.info.pieces.length).fill(0)
             }
         }
@@ -298,7 +313,6 @@
             {:else}
                 {#each torrents as torrent (torrent.id)}
                     <TorrentItem
-                        id={torrent.id}
                         torrentData={torrent.torrentData}
                         fileName={torrent.fileName}
                         progress={torrent.progress}
