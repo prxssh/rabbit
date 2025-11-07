@@ -4,6 +4,7 @@
     import { formatBytes } from '../lib/utils'
 
     export let torrentData: torrent.Torrent | undefined
+    export let size: number
     export let fileName: string
     export let progress: number
     export let downloadSpeed: string
@@ -35,7 +36,7 @@
         </div>
         <ProgressBar {progress} height="6px" />
         <div class="torrent-info">
-            <span class="info-item">{formatBytes(torrentData?.size || 0)}</span>
+            <span class="info-item">{formatBytes(torrentData?.metainfo?.size || 0)}</span>
             <span class="info-item">↓ {downloadSpeed}</span>
             <span class="info-item">↑ {uploadSpeed}</span>
         </div>
