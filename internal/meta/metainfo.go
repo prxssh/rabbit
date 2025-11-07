@@ -12,6 +12,7 @@ import (
 
 type Metainfo struct {
 	Info         *Info           `json:"info"`
+	Size         uint64          `json:"size"`
 	Announce     string          `json:"announce"`
 	AnnounceList [][]string      `json:"announceList"`
 	CreationDate time.Time       `json:"creationDate"`
@@ -24,15 +25,15 @@ type Metainfo struct {
 
 type Info struct {
 	Name        string            `json:"name"`
-	PieceLength int32             `json:"pieceLength"`
+	PieceLength uint32            `json:"pieceLength"`
 	Pieces      [][sha1.Size]byte `json:"pieces"`
 	Private     bool              `json:"private"`
-	Length      int64             `json:"length"`
+	Length      uint64            `json:"length"`
 	Files       []*File           `json:"files"`
 }
 
 type File struct {
-	Length int64    `json:"length"`
+	Length uint64   `json:"length"`
 	Path   []string `json:"path"`
 }
 
@@ -50,12 +51,12 @@ var (
 	ErrCreationDateInvalid = errors.New("metainfo: invalid creation date")
 )
 
-func (m *Metainfo) Size() int64 {
+func calculateSize(m *Metainfo) uint64 {
 	if m.Info.Length > 0 {
 		return m.Info.Length
 	}
 
-	var sum int64
+	var sum uint64
 	for _, f := range m.Info.Files {
 		sum += f.Length
 	}
@@ -117,7 +118,7 @@ func ParseMetainfo(data []byte) (*Metainfo, error) {
 		return nil, fmt.Errorf("metainfo: info hash: %w", err)
 	}
 
-	return &Metainfo{
+	m := &Metainfo{
 		Info:         info,
 		InfoHash:     infoHash,
 		Announce:     announce,
@@ -126,7 +127,10 @@ func ParseMetainfo(data []byte) (*Metainfo, error) {
 		CreatedBy:    createdBy,
 		Comment:      comment,
 		Encoding:     encoding,
-	}, nil
+	}
+	m.Size = calculateSize(m)
+
+	return m, nil
 }
 
 func parseInfo(anyInfo any) (*Info, error) {
@@ -160,7 +164,7 @@ func parseInfo(anyInfo any) (*Info, error) {
 	if err != nil || plen <= 0 {
 		return nil, ErrPieceLenNonPositive
 	}
-	out.PieceLength = int32(plen)
+	out.PieceLength = uint32(plen)
 
 	out.Pieces, err = parsePieces(dict["pieces"])
 	if err != nil {
@@ -187,7 +191,7 @@ func parseInfo(anyInfo any) (*Info, error) {
 		if err != nil || length < 0 {
 			return nil, fmt.Errorf("metainfo: invalid 'length'")
 		}
-		out.Length = length
+		out.Length = uint64(length)
 
 	case hasFiles && !hasLength:
 		out.Files, err = parseFiles(filesVal)
@@ -233,7 +237,7 @@ func parseFiles(v any) ([]*File, error) {
 			return nil, fmt.Errorf("metainfo: files[%d]: invalid path", i)
 		}
 
-		files = append(files, &File{Length: ln, Path: segments})
+		files = append(files, &File{Length: uint64(ln), Path: segments})
 	}
 
 	return files, nil
