@@ -52,33 +52,33 @@ type Store struct {
 	cfg              *Config
 	log              *slog.Logger
 	pieceBufferMut   sync.RWMutex
-	pieceBuffers     map[int]*pieceBuffer
+	pieceBuffers     map[uint32]*pieceBuffer
 	pieceHashes      [][sha1.Size]byte
 	PieceQueue       chan *scheduler.BlockData
 	diskWriteQueue   chan *completePiece
 	PieceResultQueue chan *scheduler.PieceResult
-	pieceLen         int32
+	pieceLen         uint32
 	files            []*datafile
-	totalSize        int64
+	totalSize        uint64
 }
 
 type pieceBuffer struct {
-	index    int
-	blocks   map[int][]byte
-	size     int
-	received int
+	index    uint32
+	blocks   map[uint32][]byte
+	size     uint32
+	received uint32
 	mut      sync.Mutex
 }
 
 type datafile struct {
 	f      *os.File
-	offset int64
-	length int64
+	offset uint64
+	length uint64
 	path   string
 }
 
 type completePiece struct {
-	index int
+	index uint32
 	data  []byte
 }
 
@@ -103,7 +103,7 @@ func NewStorage(metainfo *meta.Metainfo, cfg *Config, log *slog.Logger) (*Store,
 		files:            files,
 		pieceHashes:      metainfo.Info.Pieces,
 		pieceLen:         metainfo.Info.PieceLength,
-		pieceBuffers:     make(map[int]*pieceBuffer),
+		pieceBuffers:     make(map[uint32]*pieceBuffer),
 		PieceResultQueue: make(chan *scheduler.PieceResult, cfg.DiskQueueSize),
 		diskWriteQueue:   make(chan *completePiece, cfg.DiskQueueSize),
 		PieceQueue:       make(chan *scheduler.BlockData, cfg.PieceQueueSize),
@@ -147,7 +147,7 @@ func (s *Store) handlePieceBlock(block *scheduler.BlockData) error {
 	if !exists {
 		buf = &pieceBuffer{
 			index:  block.PieceIdx,
-			blocks: make(map[int][]byte),
+			blocks: make(map[uint32][]byte),
 			size:   block.PieceLen,
 		}
 		s.pieceBuffers[block.PieceIdx] = buf
@@ -167,7 +167,7 @@ func (s *Store) handlePieceBlock(block *scheduler.BlockData) error {
 	}
 
 	buf.blocks[block.Begin] = block.Data
-	buf.received += len(block.Data)
+	buf.received += uint32(len(block.Data))
 
 	if buf.received != buf.size {
 		buf.mut.Unlock()
@@ -186,11 +186,11 @@ func (s *Store) handlePieceBlock(block *scheduler.BlockData) error {
 		s.log.Warn("piece hash mismatch, discarding", "piece", block.PieceIdx)
 
 		buf.mut.Lock()
-		buf.blocks = make(map[int][]byte)
+		buf.blocks = make(map[uint32][]byte)
 		buf.received = 0
 		buf.mut.Unlock()
 
-		s.PieceResultQueue <- &scheduler.PieceResult{Piece: block.PieceIdx, Success: false}
+		s.PieceResultQueue <- &scheduler.PieceResult{PieceIdx: block.PieceIdx, Success: false}
 
 		return fmt.Errorf("piece %d: hash mismatch", block.PieceIdx)
 	}
@@ -226,7 +226,7 @@ func (s *Store) writeToDiskLoop(ctx context.Context) error {
 				success = false
 			}
 
-			s.PieceResultQueue <- &scheduler.PieceResult{Piece: piece.index, Success: success}
+			s.PieceResultQueue <- &scheduler.PieceResult{PieceIdx: piece.index, Success: success}
 		}
 	}
 }
@@ -234,8 +234,8 @@ func (s *Store) writeToDiskLoop(ctx context.Context) error {
 func (s *Store) writePiece(piece *completePiece) error {
 	s.log.Info("piece complete, writing to disk", "piece", piece.index)
 
-	pieceAbsStart := int64(piece.index) * int64(s.pieceLen)
-	pieceAbsEnd := pieceAbsStart + int64(len(piece.data))
+	pieceAbsStart := uint64(piece.index) * uint64(s.pieceLen)
+	pieceAbsEnd := pieceAbsStart + uint64(len(piece.data))
 
 	for _, file := range s.files {
 		fileAbsStart := file.offset
@@ -259,7 +259,7 @@ func (s *Store) writePiece(piece *completePiece) error {
 		if err != nil {
 			return fmt.Errorf("file write error for %s: %w", file.path, err)
 		}
-		if int64(n) != writeLen {
+		if uint64(n) != writeLen {
 			return fmt.Errorf(
 				"incomplete write to file %s: wrote %d, expected %d",
 				file.path,
@@ -273,8 +273,8 @@ func (s *Store) writePiece(piece *completePiece) error {
 }
 
 func (s *Store) readPiece(index int, data []byte) error {
-	pieceAbsStart := int64(index) * int64(s.pieceLen)
-	pieceAbsEnd := pieceAbsStart + int64(len(data))
+	pieceAbsStart := uint64(index) * uint64(s.pieceLen)
+	pieceAbsEnd := pieceAbsStart + uint64(len(data))
 
 	for _, file := range s.files {
 		fileAbsStart := file.offset
@@ -291,11 +291,11 @@ func (s *Store) readPiece(index int, data []byte) error {
 		offsetInFile := overlapStart - fileAbsStart
 		offsetInData := overlapStart - pieceAbsStart
 
-		n, err := file.f.ReadAt(data[offsetInData:offsetInData+readLen], offsetInFile)
+		n, err := file.f.ReadAt(data[offsetInData:offsetInData+readLen], int64(offsetInFile))
 		if err != nil {
 			return fmt.Errorf("file read error for %s: %w", file.path, err)
 		}
-		if int64(n) != readLen {
+		if uint64(n) != readLen {
 			return fmt.Errorf(
 				"incomplete read from file %s: read %d, expected %d",
 				file.path,
@@ -314,7 +314,7 @@ func setupFiles(metainfo *meta.Metainfo, downloadDir string) ([]*datafile, error
 	}
 
 	var (
-		currentOffset int64
+		currentOffset uint64
 		datafiles     []*datafile
 	)
 
@@ -347,7 +347,7 @@ func setupFiles(metainfo *meta.Metainfo, downloadDir string) ([]*datafile, error
 	return datafiles, nil
 }
 
-func createFileMapping(path string, size, offset int64) (*datafile, error) {
+func createFileMapping(path string, size, offset uint64) (*datafile, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func createFileMapping(path string, size, offset int64) (*datafile, error) {
 		return nil, err
 	}
 
-	if err := file.Truncate(size); err != nil {
+	if err := file.Truncate(int64(size)); err != nil {
 		file.Close()
 		return nil, err
 	}
