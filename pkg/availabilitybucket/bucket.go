@@ -65,6 +65,13 @@ func NewBucket(n, maxAvail int) *Bucket {
 	return b
 }
 
+func (b *Bucket) MaxAvailability() int {
+	b.mut.RLock()
+	defer b.mut.RUnlock()
+
+	return b.maxAvail
+}
+
 // Availability returns the current availability of piece i.
 func (b *Bucket) Availability(i int) int {
 	b.mut.RLock()
