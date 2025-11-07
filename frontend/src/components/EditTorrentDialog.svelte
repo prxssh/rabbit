@@ -3,7 +3,7 @@
         SelectDownloadDirectory,
         GetTorrentConfig,
         UpdateTorrentConfig,
-    } from '../../wailsjs/go/torrent/Client.js'
+    } from '../../wailsjs/go/ui/Client.js'
     import type { torrent } from '../../wailsjs/go/models'
     import Modal from './ui/Modal.svelte'
     import Button from './ui/Button.svelte'

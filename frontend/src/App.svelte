@@ -4,7 +4,7 @@
         GetTorrentStats,
         RemoveTorrent,
         GetDefaultConfig,
-    } from '../wailsjs/go/torrent/Client.js'
+    } from '../wailsjs/go/ui/Client.js'
     import type { torrent, peer } from '../wailsjs/go/models'
     import { onDestroy, onMount } from 'svelte'
     import TopBar from './components/TopBar.svelte'
