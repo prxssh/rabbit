@@ -125,6 +125,10 @@ func (s *Swarm) Run(ctx context.Context) error {
 	return nil
 }
 
+func (s *Swarm) GetPeerConnectQueue() chan<- netip.AddrPort {
+	return s.peerConnectCh
+}
+
 func (s *Swarm) Stats() SwarmMetrics {
 	ps := s.stats
 	return SwarmMetrics{
@@ -276,7 +280,13 @@ func (s *Swarm) peerDialerLoop(ctx context.Context) {
 
 			peer, err := s.addPeer(ctx, peerAddr)
 			if err != nil {
-				l.Debug("peer connection failed", "addr", peerAddr, "error", err.Error())
+				l.Debug(
+					"peer connection failed",
+					"addr",
+					peerAddr,
+					"error",
+					err.Error(),
+				)
 				continue
 			}
 			if peer == nil { // duplicate
