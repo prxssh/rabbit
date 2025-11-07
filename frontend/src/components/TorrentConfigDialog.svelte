@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { GetDefaultConfig } from '../../wailsjs/go/torrent/Client.js'
+    import { GetDefaultConfig } from '../../wailsjs/go/ui/Client.js'
     import type { torrent, scheduler, storage, peer, tracker } from '../../wailsjs/go/models'
     import Modal from './ui/Modal.svelte'
     import Button from './ui/Button.svelte'

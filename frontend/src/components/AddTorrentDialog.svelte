@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { SelectDownloadDirectory, GetDefaultConfig } from '../../wailsjs/go/torrent/Client.js'
+    import { SelectDownloadDirectory, GetDefaultConfig } from '../../wailsjs/go/ui/Client.js'
     import type { torrent } from '../../wailsjs/go/models'
     import Modal from './ui/Modal.svelte'
     import Button from './ui/Button.svelte'

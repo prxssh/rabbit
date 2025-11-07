@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
     import type { peer } from '../../wailsjs/go/models'
-    import { GetPeerMessageHistory } from '../../wailsjs/go/torrent/Client.js'
+    import { GetPeerMessageHistory } from '../../wailsjs/go/ui/Client.js'
 
     export let infoHash: string
     export let peers: peer.PeerMetrics[]
