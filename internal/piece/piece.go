@@ -163,7 +163,7 @@ func (m *Manager) MarkBlockComplete(peer netip.AddrPort, pieceIdx, begin uint32)
 	block.status = StatusDone
 	piece.doneBlocks++
 
-	redundantPeers := make([]netip.AddrPort, 0, len(block.owners))
+	var redundantPeers []netip.AddrPort
 	for i := range block.owners {
 		if block.owners[i].peer != peer {
 			redundantPeers = append(redundantPeers, block.owners[i].peer)
