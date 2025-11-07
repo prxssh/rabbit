@@ -55,7 +55,7 @@ func (c *Client) AddTorrent(data []byte, cfg *torrent.Config) (*torrent.Torrent,
 	c.log.Debug("adding torrent",
 		"name", torrent.Metainfo.Info.Name,
 		"info_hash", infoHashHex,
-		"size", torrent.Size,
+		"size", torrent.Metainfo.Size,
 		"pieces", len(torrent.Metainfo.Info.Pieces),
 	)
 

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/prxssh/rabbit/internal/torrent"
+	"github.com/prxssh/rabbit/internal/ui"
 	"github.com/prxssh/rabbit/pkg/logging"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -19,7 +19,7 @@ var assets embed.FS
 func main() {
 	setupLogger()
 
-	client, err := torrent.NewClient()
+	client, err := ui.NewClient()
 	if err != nil {
 		slog.Error("failed to initialize rabbit client", "error", err.Error())
 		os.Exit(1)
