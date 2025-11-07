@@ -3,6 +3,7 @@ package scheduler
 import (
 	"net/netip"
 
+	"github.com/prxssh/rabbit/internal/piece"
 	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
@@ -68,7 +69,7 @@ func NewHaveEvent(addr netip.AddrPort, pieceIdx uint32) PeerHaveEvent {
 type PieceData struct {
 	PieceIdx uint32
 	Begin    uint32
-	Data     []byte
+	Block    []byte
 }
 
 func NewPieceEvent(addr netip.AddrPort, pieceIdx, begin uint32, data []byte) PeerPieceEvent {
@@ -77,7 +78,7 @@ func NewPieceEvent(addr netip.AddrPort, pieceIdx, begin uint32, data []byte) Pee
 		Data: PieceData{
 			PieceIdx: pieceIdx,
 			Begin:    begin,
-			Data:     data,
+			Block:    data,
 		},
 	}
 }
@@ -117,14 +118,14 @@ func NewCancelEvent(addr netip.AddrPort, pieceIdx, begin, length uint32) PeerCan
 }
 
 type PeerSpeedUpdate struct {
-	MaxInflight uint32
+	DownloadBytesPerSec uint64
 }
 
-func NewPeerSppeedUpdateEvent(addr netip.AddrPort, maxInflightRequest uint32) PeerSpeedEvent {
+func NewPeerSpeedUpdateEvent(addr netip.AddrPort, downloadBytesPerSec uint64) PeerSpeedEvent {
 	return PeerSpeedEvent{
 		Peer: addr,
 		Data: PeerSpeedUpdate{
-			MaxInflight: maxInflightRequest,
+			DownloadBytesPerSec: downloadBytesPerSec,
 		},
 	}
 }
@@ -294,5 +295,6 @@ func (s *Scheduler) handlePeerSpeedEvent(addr netip.AddrPort, data PeerSpeedUpda
 		return
 	}
 
-	peer.maxInflightRequests = data.MaxInflight
+	blockPerSecond := data.DownloadBytesPerSec / piece.MaxBlockLength
+	peer.maxInflightRequests = uint32(blockPerSecond)
 }

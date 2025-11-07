@@ -127,7 +127,7 @@ type Tracker struct {
 	tiers             [][]*url.URL
 	mu                sync.Mutex
 	trackers          map[string]TrackerProtocol
-	log               *slog.Logger
+	logger            *slog.Logger
 	stats             *Stats
 	reannounceNow     chan struct{}
 	onAnnounceStart   func() *AnnounceParams
@@ -137,7 +137,7 @@ type Tracker struct {
 type TrackerOpts struct {
 	OnAnnounceStart   func() *AnnounceParams
 	OnAnnounceSuccess func(addrs []netip.AddrPort)
-	Log               *slog.Logger
+	Logger            *slog.Logger
 	Config            *Config
 }
 
@@ -169,11 +169,11 @@ func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*T
 		})
 	}
 
-	log := opts.Log.With("component", "tracker", "tiers", len(tiers))
+	log := opts.Logger.With("component", "tracker", "tiers", len(tiers))
 
 	return &Tracker{
 		cfg:               opts.Config,
-		log:               log,
+		logger:            log,
 		tiers:             tiers,
 		stats:             &Stats{},
 		reannounceNow:     make(chan struct{}, 1),

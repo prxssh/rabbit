@@ -20,7 +20,7 @@ type Event struct {
 	PayloadSize int       `json:"payloadSize"`
 }
 
-type MessageHistoryBuffer struct {
+type messageHistoryBuffer struct {
 	buf      []*Event
 	mut      sync.RWMutex
 	capacity int
@@ -29,12 +29,12 @@ type MessageHistoryBuffer struct {
 	readPos  int // position to read the oldest element
 }
 
-func NewMessageHistoryBuffer(capacity int) *MessageHistoryBuffer {
+func newMessageHistoryBuffer(capacity int) *messageHistoryBuffer {
 	if capacity <= 0 {
 		panic("capacity must be positive")
 	}
 
-	return &MessageHistoryBuffer{
+	return &messageHistoryBuffer{
 		buf:      make([]*Event, capacity),
 		capacity: capacity,
 		writePos: 0,
@@ -43,7 +43,7 @@ func NewMessageHistoryBuffer(capacity int) *MessageHistoryBuffer {
 	}
 }
 
-func (mh *MessageHistoryBuffer) Add(event *Event) {
+func (mh *messageHistoryBuffer) Add(event *Event) {
 	mh.mut.Lock()
 	defer mh.mut.Unlock()
 
@@ -57,7 +57,7 @@ func (mh *MessageHistoryBuffer) Add(event *Event) {
 	}
 }
 
-func (mh *MessageHistoryBuffer) Get(batchSize int) ([]*Event, error) {
+func (mh *messageHistoryBuffer) Get(batchSize int) ([]*Event, error) {
 	mh.mut.RLock()
 	defer mh.mut.RUnlock()
 

@@ -60,6 +60,7 @@ type Manager struct {
 	blockCount      uint32
 }
 
+// TODO: check timeouts and free blocks
 func NewManager(pieceHashes [][sha1.Size]byte, pieceLen uint32, size uint64) (*Manager, error) {
 	lastPieceLen, ok := LastPieceLength(size, pieceLen)
 	if !ok {

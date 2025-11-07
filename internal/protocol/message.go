@@ -115,11 +115,11 @@ func MessagePiece(index, begin uint32, block []byte) *Message {
 	return &Message{ID: Piece, Payload: payload}
 }
 
-func MessageCancel(index, begin, length int) *Message {
+func MessageCancel(index, begin, length uint32) *Message {
 	payload := make([]byte, 12)
-	binary.BigEndian.PutUint32(payload[0:4], uint32(index))
-	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
-	binary.BigEndian.PutUint32(payload[8:12], uint32(length))
+	binary.BigEndian.PutUint32(payload[0:4], index)
+	binary.BigEndian.PutUint32(payload[4:8], begin)
+	binary.BigEndian.PutUint32(payload[8:12], length)
 
 	return &Message{ID: Cancel, Payload: payload}
 }

@@ -26,18 +26,16 @@ const (
 
 type Peer struct {
 	cfg            *Config
+	logger         *slog.Logger
 	conn           net.Conn
 	addr           netip.AddrPort
-	log            *slog.Logger
 	stats          *peerStats
-	messageHistory *MessageHistoryBuffer
+	messageHistory *messageHistoryBuffer
 	messageOutbox  chan *protocol.Message
 	state          uint32
 	lastActivityNs atomic.Int64
-	workQueue      <-chan *scheduler.WorkItem
-	eventQueue     chan<- scheduler.Event
-	cancel         context.CancelFunc
-	stopped        atomic.Bool
+	work           <-chan scheduler.Event
+	event          chan<- scheduler.Event
 }
 
 type peerStats struct {
@@ -75,17 +73,17 @@ type PeerMetrics struct {
 }
 
 type peerOpts struct {
-	log        *slog.Logger
+	logger     *slog.Logger
 	pieceCount int
 	infoHash   [sha1.Size]byte
 	clientID   [sha1.Size]byte
-	workQueue  <-chan *scheduler.WorkItem
+	workQueue  <-chan scheduler.Event
 	eventQueue chan<- scheduler.Event
 	config     *Config
 }
 
-func NewPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, error) {
-	log := opts.log.With("src", "peer", "addr", addr)
+func newPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, error) {
+	logger := opts.logger.With("source", "peer", "addr", addr)
 
 	conn, err := net.DialTimeout("tcp", addr.String(), opts.config.DialTimeout)
 	if err != nil {
@@ -100,28 +98,27 @@ func NewPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, e
 
 	p := &Peer{
 		cfg:            opts.config,
-		log:            log,
+		logger:         logger,
 		conn:           conn,
 		addr:           addr,
 		stats:          &peerStats{},
-		workQueue:      opts.workQueue,
-		eventQueue:     opts.eventQueue,
-		messageHistory: NewMessageHistoryBuffer(500),
+		work:           opts.workQueue,
+		event:          opts.eventQueue,
+		messageHistory: newMessageHistoryBuffer(500),
 		messageOutbox:  make(chan *protocol.Message, opts.config.PeerOutboxBacklog),
 	}
+
 	p.setState(stateAmChoking|statePeerChoking, true)
 	p.lastActivityNs.Store(time.Now().UnixNano())
 	p.stats.ConnectedAt = time.Now()
-	p.eventQueue <- scheduler.NewHandshakeEVent(p.addr)
+	p.event <- scheduler.NewHandshakeEvent(p.addr)
 
 	return p, nil
 }
 
+// TODO: errgroup
 func (p *Peer) Run(ctx context.Context) error {
 	defer p.cleanup()
-
-	ctx, cancel := context.WithCancel(ctx)
-	p.cancel = cancel
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -131,18 +128,6 @@ func (p *Peer) Run(ctx context.Context) error {
 	g.Go(func() error { return p.downloadUploadRatesLoop(gctx) })
 
 	return g.Wait()
-}
-
-func (p *Peer) Close() {
-	if !p.stopped.CompareAndSwap(false, true) {
-		return
-	}
-
-	if p.cancel != nil {
-		p.cancel()
-	}
-
-	_ = p.conn.Close()
 }
 
 func (p *Peer) GetMessageHistory(limit int) ([]*Event, error) {
@@ -191,22 +176,19 @@ func (p *Peer) Stats() PeerMetrics {
 }
 
 func (p *Peer) cleanup() {
-	p.stopped.Store(true)
-
 	close(p.messageOutbox)
 
 	p.stats.DisconnectedAt = time.Now()
-	p.eventQueue <- scheduler.NewPeerGoneEvent(p.addr)
+	p.event <- scheduler.NewGoneEvent(p.addr)
 }
 
 func (p *Peer) readMessagesLoop(ctx context.Context) error {
-	l := p.log.With("component", "read message loop")
+	l := p.logger.With("component", "read message loop")
 	l.Debug("started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done!", "error", ctx.Err().Error())
 			return nil
 		default:
 		}
@@ -229,7 +211,7 @@ func (p *Peer) readMessagesLoop(ctx context.Context) error {
 }
 
 func (p *Peer) writeMessagesLoop(ctx context.Context) error {
-	l := p.log.With("component", "write messages loop")
+	l := p.logger.With("component", "write messages loop")
 	l.Debug("started")
 
 	heartbeatTicker := time.NewTicker(p.cfg.PeerHeartbeatInterval)
@@ -238,7 +220,6 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("exiting; context done!", "error", ctx.Err().Error())
 			return nil
 
 		case message, ok := <-p.messageOutbox:
@@ -259,7 +240,7 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 			lastActivityAt := time.Unix(0, p.lastActivityNs.Load())
 
 			if time.Since(lastActivityAt) >= p.cfg.PeerHeartbeatInterval {
-				p.pushMessage(ctx, nil)
+				p.sendMessage(ctx, nil)
 			}
 		}
 	}
@@ -281,15 +262,8 @@ func (p *Peer) writeMessagesLoop(ctx context.Context) error {
 
 // Higher α reacts faster; lower α is smoother. If you prefer a raw
 // per-second rate, set α=1 (emaNext == instant).
-//
-// Notes:
-//   - Counters only increase; unsigned subtraction yields the correct delta.
-//   - If the ticker drifts, divide by the measured elapsedSeconds instead of
-//     assuming exactly 1s.
-//   - Store the final bytes/sec into UploadRate and DownloadRate atomically.
-//   - Pauses naturally produce zero deltas (zero rate).
 func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
-	l := p.log.With("component", "download upload rate loop")
+	l := p.logger.With("component", "download upload rate loop")
 	l.Debug("started")
 
 	t := time.NewTicker(time.Second)
@@ -308,7 +282,6 @@ func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done!", "error", ctx.Err().Error())
 			return nil
 
 		case now := <-t.C:
@@ -331,6 +304,8 @@ func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
 			p.stats.UploadRate.Store(upEMA)
 			p.stats.DownloadRate.Store(downEMA)
 
+			p.event <- scheduler.NewPeerSpeedUpdateEvent(p.addr, downEMA)
+
 			lastUp = curUp
 			lastDown = curDown
 			lastTick = now
@@ -339,7 +314,7 @@ func (p *Peer) downloadUploadRatesLoop(ctx context.Context) error {
 }
 
 func (p *Peer) requestWorkerLoop(ctx context.Context) error {
-	l := p.log.With("component", "request worker loop")
+	l := p.logger.With("component", "request worker loop")
 	l.Debug("started")
 
 	for {
@@ -347,37 +322,32 @@ func (p *Peer) requestWorkerLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 
-		case work, ok := <-p.workQueue:
+		case work, ok := <-p.work:
 			if !ok {
 				return nil
 			}
 
 			var message *protocol.Message
-
-			switch work.Type {
-			case scheduler.WorkRequestPiece:
-				message = protocol.MessageRequest(
-					uint32(work.Piece),
-					uint32(work.Begin),
-					uint32(work.Length),
-				)
-			case scheduler.WorkSendHave:
-				message = protocol.MessageHave(uint32(work.Piece))
-			case scheduler.WorkSendBitfield:
-				message = protocol.MessageBitfield(work.Bitfield)
-			case scheduler.WorkSendNotInterested:
-				message = protocol.MessageNotInterested()
-			case scheduler.WorkSendInterested:
-				message = protocol.MessageInterested()
-			case scheduler.WorkCancelPiece:
-				message = protocol.MessageCancel(
-					work.Piece,
-					work.Begin,
-					work.Length,
-				)
+			switch w := work.(type) {
+			case scheduler.PeerChokedEvent:
+				message = protocol.MessageChoke()
+			case scheduler.PeerUnchokedEvent:
+				message = protocol.MessageUnchoke()
+			case scheduler.PeerBitfieldEvent:
+				message = protocol.MessageBitfield(w.Data)
+			case scheduler.PeerCancelEvent:
+				message = protocol.MessageCancel(w.Data.PieceIdx, w.Data.Begin, w.Data.Length)
+			case scheduler.PeerRequestEvent:
+				message = protocol.MessageRequest(w.Data.PieceIdx, w.Data.Begin, w.Data.Length)
+			case scheduler.PeerHaveEvent:
+				message = protocol.MessageHave(w.Data.Piece)
+			case scheduler.PeerPieceEvent:
+				message = protocol.MessagePiece(w.Data.PieceIdx, w.Data.Begin, w.Data.Block)
+			default:
+				l.Warn("unhandled work message", "message", work)
 			}
 
-			p.pushMessage(ctx, message)
+			p.sendMessage(ctx, message)
 		}
 	}
 }
@@ -407,7 +377,7 @@ func (p *Peer) writeMessage(message *protocol.Message) error {
 		return err
 	}
 
-	p.onMessageWritten(message)
+	p.handleSentMessage(message)
 	return nil
 }
 
@@ -448,11 +418,11 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 	switch message.ID {
 	case protocol.Choke:
 		p.setState(statePeerChoking, true)
-		p.eventQueue <- scheduler.NewChokedEvent(p.addr)
+		p.event <- scheduler.NewChokedEvent(p.addr)
 
 	case protocol.Unchoke:
 		p.setState(statePeerChoking, false)
-		p.eventQueue <- scheduler.NewUnchokedEvent(p.addr)
+		p.event <- scheduler.NewUnchokedEvent(p.addr)
 
 	case protocol.Interested:
 		p.setState(statePeerInterested, true)
@@ -462,7 +432,7 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 
 	case protocol.Bitfield:
 		bf := bitfield.FromBytes(message.Payload)
-		p.eventQueue <- scheduler.NewBitfieldEvent(p.addr, bf)
+		p.event <- scheduler.NewBitfieldEvent(p.addr, bf)
 
 	case protocol.Have:
 		piece, ok := message.ParseHave()
@@ -471,7 +441,7 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 		}
 
 		event.PieceIndex = &piece
-		p.eventQueue <- scheduler.NewHaveEvent(p.addr, piece)
+		p.event <- scheduler.NewHaveEvent(p.addr, piece)
 
 	case protocol.Piece:
 		piece, begin, block, ok := message.ParsePiece()
@@ -482,7 +452,7 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 		event.PieceIndex = &piece
 		event.BlockOffset = &begin
 
-		p.eventQueue <- scheduler.NewPieceEvent(p.addr, piece, begin, block)
+		p.event <- scheduler.NewPieceEvent(p.addr, piece, begin, block)
 
 		p.stats.PiecesReceived.Add(1)
 		p.stats.Downloaded.Add(uint64(len(block)))
@@ -510,7 +480,7 @@ func (p *Peer) handleMessage(message *protocol.Message) error {
 	return nil
 }
 
-func (p *Peer) onMessageWritten(message *protocol.Message) {
+func (p *Peer) handleSentMessage(message *protocol.Message) {
 	event := &Event{
 		Timestamp: time.Now(),
 		Direction: EventSent,
@@ -574,7 +544,7 @@ func (p *Peer) onMessageWritten(message *protocol.Message) {
 	p.messageHistory.Add(event)
 }
 
-func (p *Peer) pushMessage(ctx context.Context, message *protocol.Message) {
+func (p *Peer) sendMessage(ctx context.Context, message *protocol.Message) {
 	select {
 	case p.messageOutbox <- message:
 

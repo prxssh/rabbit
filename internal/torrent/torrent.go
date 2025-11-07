@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
-	"sync"
 
 	"github.com/prxssh/rabbit/internal/meta"
 	"github.com/prxssh/rabbit/internal/peer"
+	"github.com/prxssh/rabbit/internal/piece"
 	"github.com/prxssh/rabbit/internal/scheduler"
 	"github.com/prxssh/rabbit/internal/storage"
 	"github.com/prxssh/rabbit/internal/tracker"
@@ -17,18 +17,17 @@ import (
 )
 
 type Torrent struct {
-	clientID    [sha1.Size]byte
-	cfg         *Config
-	Size        int64          `json:"size"`
-	Metainfo    *meta.Metainfo `json:"metainfo"`
-	tracker     *tracker.Tracker
-	peerManager *peer.Swarm
-	storage     *storage.Store
-	scheduler   *scheduler.PieceScheduler
-	cancel      context.CancelFunc
-	stopOnce    sync.Once
-	log         *slog.Logger
-	refillPeerQ chan struct{}
+	Metainfo *meta.Metainfo
+
+	clientID     [sha1.Size]byte
+	cfg          *Config
+	logger       *slog.Logger
+	tracker      *tracker.Tracker
+	peerManager  *peer.Swarm
+	storage      *storage.Store
+	scheduler    *scheduler.Scheduler
+	pieceManager *piece.Manager
+	cancel       context.CancelFunc
 }
 
 func NewTorrent(clientID [sha1.Size]byte, data []byte, cfg *Config) (*Torrent, error) {
@@ -41,59 +40,64 @@ func NewTorrent(clientID [sha1.Size]byte, data []byte, cfg *Config) (*Torrent, e
 		return nil, err
 	}
 
-	torrent := &Torrent{
-		cfg:      cfg,
-		Metainfo: metainfo,
-		Size:     metainfo.Size(),
-		log:      slog.Default().With("torrent", metainfo.Info.Name),
-	}
+	logger := slog.Default().With("torrent", metainfo.Info.Name)
 
-	storage, err := storage.NewStorage(metainfo, cfg.Storage, torrent.log)
+	storage, err := storage.NewStorage(metainfo, cfg.Storage, logger)
 	if err != nil {
 		return nil, err
 	}
-	torrent.storage = storage
 
-	scheduler, err := scheduler.NewPieceScheduler(&scheduler.Opts{
-		Config:           cfg.Scheduler,
-		Log:              torrent.log,
-		TotalSize:        torrent.Size,
-		PieceHashes:      metainfo.Info.Pieces,
-		PieceLength:      metainfo.Info.PieceLength,
-		PieceQueue:       storage.PieceQueue,
-		PieceResultQueue: storage.PieceResultQueue,
-	})
-	torrent.scheduler = scheduler
+	pieceManager, err := piece.NewManager(
+		metainfo.Info.Pieces,
+		metainfo.Info.PieceLength,
+		metainfo.Size,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	scheduler := scheduler.NewScheduler(
+		pieceManager,
+		storage.PieceQueue,
+		storage.PieceResultQueue,
+		&scheduler.Opts{
+			Config:   cfg.Scheduler,
+			Logger:   logger,
+			MaxPeers: cfg.Peer.MaxPeers,
+		},
+	)
 
 	peerManager, err := peer.NewSwarm(&peer.SwarmOpts{
-		Config:     cfg.Peer,
-		Log:        torrent.log,
-		Scheduler:  scheduler,
-		InfoHash:   metainfo.InfoHash,
-		PieceCount: len(metainfo.Info.Pieces),
+		Config:    cfg.Peer,
+		Logger:    logger,
+		Scheduler: scheduler,
+		InfoHash:  metainfo.InfoHash,
 	})
 	if err != nil {
 		return nil, err
 	}
-	torrent.peerManager = peerManager
 
 	tracker, err := tracker.NewTracker(
 		metainfo.Announce,
 		metainfo.AnnounceList,
 		&tracker.TrackerOpts{
-			Config:            cfg.Tracker,
-			Log:               torrent.log,
-			OnAnnounceStart:   torrent.buildAnnounceParams,
-			OnAnnounceSuccess: torrent.peerManager.AdmitPeers,
+			Config: cfg.Tracker,
+			Logger: logger,
 		},
 	)
 	if err != nil {
 		return nil, err
 	}
-	torrent.tracker = tracker
-	peerManager.RegisterRefillPeerHook(tracker.RefillPeers)
 
-	return torrent, nil
+	return &Torrent{
+		clientID:     clientID,
+		cfg:          cfg,
+		logger:       logger,
+		tracker:      tracker,
+		pieceManager: pieceManager,
+		scheduler:    scheduler,
+		peerManager:  peerManager,
+	}, nil
 }
 
 func (t *Torrent) Run(ctx context.Context) error {
@@ -111,21 +115,15 @@ func (t *Torrent) Run(ctx context.Context) error {
 }
 
 func (t *Torrent) Stop() {
-	t.stopOnce.Do(func() {
-		if t.cancel != nil {
-			t.cancel()
-		}
-
-		t.log.Debug("stopped")
-	})
+	t.cancel()
 }
 
 type Stats struct {
 	peer.SwarmMetrics
 	tracker.TrackerMetrics
-	Progress    float64                `json:"progress"`
-	Peers       []peer.PeerMetrics     `json:"peers"`
-	PieceStates []scheduler.PieceState `json:"pieceStates"`
+	Progress    float64            `json:"progress"`
+	Peers       []peer.PeerMetrics `json:"peers"`
+	PieceStates []piece.Status     `json:"pieceStates"`
 }
 
 func (t *Torrent) GetStats() *Stats {
@@ -135,7 +133,7 @@ func (t *Torrent) GetStats() *Stats {
 	s := &Stats{
 		Progress:    0.0,
 		Peers:       t.peerManager.PeerMetrics(),
-		PieceStates: t.scheduler.PieceStates(),
+		PieceStates: t.pieceManager.PieceStatus(),
 	}
 	s.SwarmMetrics = swarmStats
 	s.TrackerMetrics = trackerStats
@@ -143,7 +141,7 @@ func (t *Torrent) GetStats() *Stats {
 	if total := len(s.PieceStates); total > 0 {
 		completed := 0
 		for _, st := range s.PieceStates {
-			if st == scheduler.PieceStateCompleted {
+			if st == piece.StatusDone {
 				completed++
 			}
 		}
@@ -162,11 +160,7 @@ func (t *Torrent) UpdateConfig(cfg *Config) {
 	}
 
 	t.cfg = cfg
-	t.log.Info("torrent configuration updated")
-
-	// Note: Some config changes may require restart to take effect
-	// For now we just update the stored config
-	// TODO: Apply runtime config changes where possible
+	t.logger.Info("torrent configuration updated")
 }
 
 func (t *Torrent) GetPeerMessageHistory(peerAddr string, limit int) ([]*peer.Event, error) {
@@ -186,7 +180,7 @@ func (t *Torrent) GetPeerMessageHistory(peerAddr string, limit int) ([]*peer.Eve
 func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
 	stats := t.peerManager.Stats()
 	downloaded := stats.TotalDownloaded
-	left := t.Size - int64(downloaded)
+	left := t.Metainfo.Size - downloaded
 
 	event := tracker.EventNone
 	if left == 0 {
@@ -201,6 +195,6 @@ func (t *Torrent) buildAnnounceParams() *tracker.AnnounceParams {
 		PeerID:     t.clientID,
 		Uploaded:   stats.TotalUploaded,
 		Downloaded: stats.TotalDownloaded,
-		Left:       uint64(t.Size) - stats.TotalDownloaded,
+		Left:       t.Metainfo.Size - stats.TotalDownloaded,
 	}
 }
