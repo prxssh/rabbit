@@ -6,9 +6,17 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
 const MaxBlockLength = 16 * 1024 // 16KB
+
+type BlockInfo struct {
+	PieceIdx uint32
+	Begin    uint32
+	Length   uint32
+}
 
 type Status uint8
 
@@ -121,6 +129,14 @@ func (m *Manager) PieceHash(pieceIdx uint32) [sha1.Size]byte {
 	return m.pieces[pieceIdx].hash
 }
 
+func (m *Manager) PieceComplete(pieceIdx uint32) bool {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	piece := m.pieces[pieceIdx]
+	return piece.doneBlocks == piece.blockCount
+}
+
 func (m *Manager) PieceStatus() []Status {
 	m.mut.RLock()
 	defer m.mut.RUnlock()
@@ -191,20 +207,12 @@ func (m *Manager) MarkPieceVerified(pieceIdx uint32, ok bool) {
 	piece.status = StatusWant
 }
 
-func (m *Manager) AssignBlock(peer netip.AddrPort, pieceIdx, blockIdx int32) {
+func (m *Manager) AssignBlock(peer netip.AddrPort, pieceIdx, blockIdx uint32) bool {
 	m.mut.Lock()
 	defer m.mut.Unlock()
 
-	piece := m.pieces[pieceIdx]
-	block := piece.blocks[blockIdx]
-
-	block.status = StatusInflight
-	block.owners = append(block.owners, &blockOwner{
-		peer:        peer,
-		requestedAt: time.Now(),
-	})
-
-	m.remainingBlocks--
+	_, ok := m.safeAssignBlock(peer, pieceIdx, blockIdx, 1)
+	return ok
 }
 
 func (m *Manager) UnassignBlock(peer netip.AddrPort, pieceIdx, begin uint32) {
@@ -236,4 +244,170 @@ func (m *Manager) UnassignBlock(peer netip.AddrPort, pieceIdx, begin uint32) {
 	if len(block.owners) == 0 && block.status != StatusDone {
 		block.status = StatusWant
 	}
+}
+
+func (m *Manager) AssignInProgressBlocks(
+	peer netip.AddrPort,
+	peerBF bitfield.Bitfield,
+	capacity uint32,
+) ([]*BlockInfo, uint32) {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	assigned := make([]*BlockInfo, 0, capacity)
+
+	for i := uint32(0); i < m.pieceCount && capacity > 0; i++ {
+		piece := m.pieces[i]
+		if piece.verified || piece.doneBlocks == 0 || !peerBF.Has(int(piece.index)) {
+			continue
+		}
+
+		for j := uint32(0); j < piece.blockCount && capacity > 0; j++ {
+			if piece.blocks[j].status != StatusWant {
+				continue
+			}
+
+			if block, ok := m.safeAssignBlock(peer, i, j, 1); ok {
+				assigned = append(assigned, block)
+				capacity--
+			}
+
+			break
+		}
+	}
+
+	return assigned, capacity
+}
+
+func (m *Manager) AssignEndgameBlocks(
+	peer netip.AddrPort,
+	peerBF bitfield.Bitfield,
+	capacity, duplicateLimit uint32,
+) ([]*BlockInfo, uint32) {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	assigned := make([]*BlockInfo, 0, capacity)
+
+	for i := 0; i < int(m.pieceCount) && capacity > 0; i++ {
+		piece := m.pieces[i]
+		if piece.verified || !peerBF.Has(i) {
+			continue
+		}
+
+		for j := 0; j < int(piece.blockCount) && capacity > 0; j++ {
+			if piece.blocks[j].status == StatusDone {
+				continue
+			}
+
+			if block, ok := m.safeAssignBlock(peer, uint32(i), uint32(j), duplicateLimit); ok {
+				assigned = append(assigned, block)
+				capacity--
+			}
+		}
+	}
+
+	return assigned, capacity
+}
+
+func (m *Manager) AssignSequentialBlocks(
+	peer netip.AddrPort,
+	peerBF bitfield.Bitfield,
+	capacity uint32,
+) ([]*BlockInfo, uint32) {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	assigned := make([]*BlockInfo, 0, capacity)
+
+	for m.nextPiece < m.pieceCount && m.pieces[m.nextPiece].verified {
+		m.nextPiece++
+		m.nextBlock = 0
+	}
+
+	if !peerBF.Has(int(m.nextPiece)) {
+		return assigned, capacity
+	}
+
+	piece := m.pieces[m.nextPiece]
+	for bi := m.nextBlock; bi < piece.blockCount && capacity > 0; bi++ {
+		block, ok := m.safeAssignBlock(peer, piece.index, bi, 1)
+		if ok {
+			assigned = append(assigned, block)
+			capacity--
+			m.nextBlock = bi + 1
+		}
+	}
+
+	if m.nextBlock >= piece.blockCount {
+		m.nextPiece++
+		m.nextBlock = 0
+	}
+
+	return assigned, capacity
+}
+
+func (m *Manager) AssignBlocksFromList(
+	peer netip.AddrPort,
+	pieceIndices []uint32,
+	capacity uint32,
+) ([]*BlockInfo, uint32) {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	assigned := make([]*BlockInfo, 0, capacity)
+
+	for _, pieceIdx := range pieceIndices {
+		if capacity < 1 {
+			break
+		}
+
+		if pieceIdx >= m.pieceCount || m.pieces[pieceIdx].verified {
+			continue
+		}
+
+		piece := m.pieces[pieceIdx]
+
+		for blockIdx := uint32(0); blockIdx < piece.blockCount; blockIdx++ {
+			block, ok := m.safeAssignBlock(peer, piece.index, blockIdx, 1)
+			if ok {
+				assigned = append(assigned, block)
+				capacity--
+				break
+			}
+		}
+	}
+
+	return assigned, capacity
+}
+
+func (m *Manager) safeAssignBlock(
+	peer netip.AddrPort,
+	pieceIdx, blockIdx uint32,
+	duplicateLimit uint32,
+) (*BlockInfo, bool) {
+	piece := m.pieces[pieceIdx]
+	block := piece.blocks[blockIdx]
+
+	begin, length, ok := BlockBounds(piece.length, blockIdx)
+	if !ok {
+		return nil, false
+	}
+
+	if len(block.owners) >= int(duplicateLimit) {
+		return nil, false
+	}
+
+	block.status = StatusInflight
+	block.owners = append(block.owners, &blockOwner{
+		peer:        peer,
+		requestedAt: time.Now(),
+	})
+	m.remainingBlocks--
+
+	return &BlockInfo{
+		PieceIdx: pieceIdx,
+		Begin:    begin,
+		Length:   length,
+	}, true
 }

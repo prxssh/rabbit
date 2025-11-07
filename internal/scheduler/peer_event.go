@@ -6,19 +6,6 @@ import (
 	"github.com/prxssh/rabbit/pkg/bitfield"
 )
 
-type PeerEventType int8
-
-const (
-	PeerEventUnchoked PeerEventType = iota
-	PeerEventChoked
-	PeerEventBitfield
-	PeerEventHave
-	PeerEventRequest
-	PeerEventCancel
-	PeerEventGone
-	PeerEventSpeedUpdate
-)
-
 type Event interface {
 	event()
 }
@@ -130,10 +117,10 @@ func NewCancelEvent(addr netip.AddrPort, pieceIdx, begin, length uint32) PeerCan
 }
 
 type PeerSpeedUpdate struct {
-	MaxInflight int32
+	MaxInflight uint32
 }
 
-func NewPeerSppeedUpdateEvent(addr netip.AddrPort, maxInflightRequest int32) PeerSpeedEvent {
+func NewPeerSppeedUpdateEvent(addr netip.AddrPort, maxInflightRequest uint32) PeerSpeedEvent {
 	return PeerSpeedEvent{
 		Peer: addr,
 		Data: PeerSpeedUpdate{
@@ -150,14 +137,16 @@ func (s *Scheduler) handlePeerEvent(event Event) {
 		s.handlePeerChokedEvent(e.Peer)
 	case PeerUnchokedEvent:
 		s.handlePeerUnchokedEvent(e.Peer)
+	case PeerGoneEvent:
+		s.handlePeerGoneEvent(e.Peer)
+	case PeerBitfieldEvent:
+		s.handlePeerBitfieldEvent(e.Peer, e.Data)
 	case PeerHaveEvent:
 		s.handlePeerHaveEvent(e.Peer, e.Data)
 	case PeerPieceEvent:
 		s.handlePeerPieceEvent(e.Peer, e.Data)
 	case PeerRequestEvent:
 		s.handlePeerRequestEvent(e.Peer, e.Data)
-	case PeerGoneEvent:
-		s.handlePeerGoneEvent(e.Peer)
 	case PeerCancelEvent:
 		s.handlePeerCancelEvent(e.Peer, e.Data)
 	case PeerSpeedEvent:
@@ -168,6 +157,9 @@ func (s *Scheduler) handlePeerEvent(event Event) {
 }
 
 func (s *Scheduler) handlePeerHandshakeEvent(addr netip.AddrPort) {
+	s.peerMut.RLock()
+	defer s.peerMut.RUnlock()
+
 	peer, ok := s.peers[addr]
 	if !ok {
 		return
@@ -186,6 +178,9 @@ func (s *Scheduler) handlePeerHandshakeEvent(addr netip.AddrPort) {
 }
 
 func (s *Scheduler) handlePeerChokedEvent(addr netip.AddrPort) {
+	s.peerMut.Lock()
+	defer s.peerMut.Unlock()
+
 	peer, ok := s.peers[addr]
 	if !ok {
 		return
@@ -195,15 +190,22 @@ func (s *Scheduler) handlePeerChokedEvent(addr netip.AddrPort) {
 }
 
 func (s *Scheduler) handlePeerUnchokedEvent(addr netip.AddrPort) {
+	s.peerMut.Lock()
 	peer, ok := s.peers[addr]
 	if !ok {
+		s.peerMut.Unlock()
 		return
 	}
-
 	peer.choking = false
+	s.peerMut.Unlock()
+
+	s.nextForPeer(addr)
 }
 
 func (s *Scheduler) handlePeerBitfieldEvent(addr netip.AddrPort, data bitfield.Bitfield) {
+	s.peerMut.Lock()
+	defer s.peerMut.Unlock()
+
 	peer, ok := s.peers[addr]
 	if !ok {
 		return
@@ -214,6 +216,9 @@ func (s *Scheduler) handlePeerBitfieldEvent(addr netip.AddrPort, data bitfield.B
 }
 
 func (s *Scheduler) handlePeerHaveEvent(addr netip.AddrPort, data HaveData) {
+	s.peerMut.Lock()
+	defer s.peerMut.Unlock()
+
 	peer, ok := s.peers[addr]
 	if !ok {
 		return
@@ -221,21 +226,26 @@ func (s *Scheduler) handlePeerHaveEvent(addr netip.AddrPort, data HaveData) {
 
 	pieceIdx := int(data.Piece)
 	peer.pieces.Set(pieceIdx)
-	s.downloadedPieces.Set(pieceIdx)
 	s.updateAvailability(peer.pieces, 1)
 }
 
 func (s *Scheduler) handlePeerPieceEvent(addr netip.AddrPort, data PieceData) {
+	key := blockKey(data.PieceIdx, data.Begin)
+
+	s.peerMut.Lock()
 	peer, ok := s.peers[addr]
 	if !ok {
+		s.peerMut.Unlock()
 		return
 	}
-
-	s.inflightPieceRequests--
-	key := blockKey(data.PieceIdx, data.Begin)
 	delete(peer.blockAssignments, key)
-	// TODO: send cancel
-	s.pieceManager.MarkBlockComplete(addr, data.PieceIdx, 1)
+	s.peerMut.Unlock()
+
+	s.mut.Lock()
+	s.inflightPieceRequests--
+	s.mut.Unlock()
+
+	s.pieceManager.MarkBlockComplete(addr, data.PieceIdx, data.Begin)
 
 	s.outBlocks <- &BlockData{
 		PieceIdx: data.PieceIdx,
@@ -253,21 +263,26 @@ func (s *Scheduler) handlePeerCancelEvent(addr netip.AddrPort, data CancelData) 
 }
 
 func (s *Scheduler) handlePeerGoneEvent(addr netip.AddrPort) {
+	s.peerMut.Lock()
 	peer, ok := s.peers[addr]
 	if !ok {
+		s.peerMut.Unlock()
 		return
 	}
+	delete(s.peers, addr)
+	s.peerMut.Unlock()
 
 	for key := range peer.blockAssignments {
 		pieceIdx := uint32(key >> 32)
 		begin := uint32(key & 0xFFFFFFFF)
-
-		s.inflightPieceRequests--
 		s.pieceManager.UnassignBlock(addr, pieceIdx, begin)
 	}
 
+	s.mut.Lock()
+	s.inflightPieceRequests -= int32(len(peer.blockAssignments))
+	s.mut.Unlock()
+
 	s.updateAvailability(peer.pieces, -1)
-	delete(s.peers, addr)
 }
 
 func (s *Scheduler) handlePeerSpeedEvent(addr netip.AddrPort, data PeerSpeedUpdate) {

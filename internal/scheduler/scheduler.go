@@ -15,8 +15,8 @@ import (
 type Config struct {
 	DownloadStrategy         DownloadStrategy
 	RequestTimeout           time.Duration
-	EndgameThreshold         int8
-	EndgameDuplicatePerBlock int8
+	EndgameThreshold         uint8
+	EndgameDuplicatePerBlock uint8
 }
 
 func WithDefaultConfig() *Config {
@@ -29,8 +29,8 @@ func WithDefaultConfig() *Config {
 }
 
 type peerState struct {
-	inflightRequests    int32
-	maxInflightRequests int32
+	inflightRequests    uint32
+	maxInflightRequests uint32
 	addr                netip.AddrPort
 	choking             bool
 	work                chan Event
@@ -43,7 +43,7 @@ func blockKey(pieceIdx, begin uint32) uint64 {
 }
 
 type PieceResult struct {
-	PieceIdx int32
+	PieceIdx uint32
 	Success  bool
 }
 
@@ -213,7 +213,7 @@ func (s *Scheduler) assignPeerWork(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) broadcastHave(pieceIdx int32) {
+func (s *Scheduler) broadcastHave(pieceIdx uint32) {
 	s.peerMut.RLock()
 	defer s.peerMut.RUnlock()
 
@@ -244,5 +244,22 @@ func (s *Scheduler) updateAvailability(bf bitfield.Bitfield, delta int) {
 		if bf.Has(i) && !ourBF.Has(i) {
 			s.pieceAvailabilityBucket.Move(i, delta)
 		}
+	}
+}
+
+func (s *Scheduler) assignBlockToPeer(peer *peerState, block *piece.BlockInfo) {
+	s.inflightPieceRequests++
+	key := blockKey(block.PieceIdx, block.Begin)
+	peer.blockAssignments[key] = struct{}{}
+
+	select {
+	case peer.work <- NewRequestEvent(peer.addr, block.PieceIdx, block.Begin, block.Length):
+
+	default:
+		s.logger.Warn("peer work queue full; dropping request", "peer", peer.addr)
+
+		s.inflightPieceRequests--
+		delete(peer.blockAssignments, key)
+		s.pieceManager.UnassignBlock(peer.addr, block.PieceIdx, block.Begin)
 	}
 }
