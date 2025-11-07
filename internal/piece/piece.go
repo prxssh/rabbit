@@ -3,6 +3,7 @@ package piece
 import (
 	"crypto/sha1"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
@@ -50,6 +51,7 @@ type piece struct {
 }
 
 type Manager struct {
+	logger          *slog.Logger
 	mut             sync.RWMutex
 	pieces          []*piece
 	pieceCount      uint32
@@ -61,7 +63,12 @@ type Manager struct {
 }
 
 // TODO: check timeouts and free blocks
-func NewManager(pieceHashes [][sha1.Size]byte, pieceLen uint32, size uint64) (*Manager, error) {
+func NewManager(
+	pieceHashes [][sha1.Size]byte,
+	pieceLen uint32,
+	size uint64,
+	logger *slog.Logger,
+) (*Manager, error) {
 	lastPieceLen, ok := LastPieceLength(size, pieceLen)
 	if !ok {
 		return nil, errors.New("out of bounds")
@@ -100,6 +107,7 @@ func NewManager(pieceHashes [][sha1.Size]byte, pieceLen uint32, size uint64) (*M
 	}
 
 	return &Manager{
+		logger:          logger,
 		pieces:          pieces,
 		nextPiece:       0,
 		nextBlock:       0,
@@ -114,6 +122,18 @@ func (m *Manager) PieceCount() uint32 {
 	defer m.mut.RUnlock()
 
 	return m.pieceCount
+}
+
+func (m *Manager) ResetSequentialState() {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	m.nextPiece = 0
+	m.nextBlock = 0
+
+	for m.nextPiece < m.pieceCount && m.pieces[m.nextPiece].verified {
+		m.nextPiece++
+	}
 }
 
 func (m *Manager) PieceLength(pieceIdx uint32) uint32 {
@@ -175,6 +195,8 @@ func (m *Manager) MarkBlockComplete(peer netip.AddrPort, pieceIdx, begin uint32)
 }
 
 func (m *Manager) MarkPieceVerified(pieceIdx uint32, ok bool) {
+	m.logger.Debug("mark piece verified called", "piece", pieceIdx)
+
 	m.mut.Lock()
 	defer m.mut.Unlock()
 
@@ -321,28 +343,39 @@ func (m *Manager) AssignSequentialBlocks(
 
 	assigned := make([]*BlockInfo, 0, capacity)
 
-	for m.nextPiece < m.pieceCount && m.pieces[m.nextPiece].verified {
-		m.nextPiece++
-		m.nextBlock = 0
-	}
-
-	if !peerBF.Has(int(m.nextPiece)) {
-		return assigned, capacity
-	}
-
-	piece := m.pieces[m.nextPiece]
-	for bi := m.nextBlock; bi < piece.blockCount && capacity > 0; bi++ {
-		block, ok := m.safeAssignBlock(peer, piece.index, bi, 1)
-		if ok {
-			assigned = append(assigned, block)
-			capacity--
-			m.nextBlock = bi + 1
+	for m.nextPiece < m.pieceCount && capacity > 0 {
+		// Skip verified pieces
+		for m.nextPiece < m.pieceCount && m.pieces[m.nextPiece].verified {
+			m.nextPiece++
+			m.nextBlock = 0
 		}
-	}
 
-	if m.nextBlock >= piece.blockCount {
-		m.nextPiece++
-		m.nextBlock = 0
+		if m.nextPiece >= m.pieceCount {
+			break
+		}
+
+		if !peerBF.Has(int(m.nextPiece)) {
+			m.nextPiece++
+			m.nextBlock = 0
+			continue
+		}
+
+		piece := m.pieces[m.nextPiece]
+		for bi := m.nextBlock; bi < piece.blockCount && capacity > 0; bi++ {
+			block, ok := m.safeAssignBlock(peer, piece.index, bi, 1)
+			if ok {
+				assigned = append(assigned, block)
+				capacity--
+				m.nextBlock = bi + 1
+			}
+		}
+
+		if m.nextBlock >= piece.blockCount {
+			m.nextPiece++
+			m.nextBlock = 0
+		}
+
+		break
 	}
 
 	return assigned, capacity

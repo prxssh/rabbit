@@ -4,8 +4,9 @@
     export let pieceStates: number[] = []
     export let totalPieces: number = 0
 
-    $: completedCount = pieceStates.filter((s) => s === 2).length
-    $: inProgressCount = pieceStates.filter((s) => s === 1).length
+    $: safePieceStates = Array.isArray(pieceStates) ? pieceStates : []
+    $: completedCount = safePieceStates.filter((s) => s === 2).length
+    $: inProgressCount = safePieceStates.filter((s) => s === 1).length
     $: notStartedCount = totalPieces - completedCount - inProgressCount
     $: completionPercentage =
         totalPieces > 0 ? ((completedCount / totalPieces) * 100).toFixed(1) : 0
@@ -100,15 +101,15 @@
             const row = Math.floor(i / columns)
             const x = col * (cellSize + gap)
             const y = row * (cellSize + gap)
-            const state = pieceStates[i] || 0
+            const state = safePieceStates[i] || 0
 
             if (state === 2) {
                 // Completed - solid green
                 ctx.fillStyle = completedColor
                 ctx.fillRect(x, y, cellSize, cellSize)
             } else if (state === 1) {
-                // In progress - pulsing cyan with higher minimum opacity
-                const pulse = 0.6 + Math.sin(pulsePhase) * 0.4
+                // In progress - subtle pulsing with reduced intensity
+                const pulse = 0.25 + Math.sin(pulsePhase) * 0.15
                 ctx.fillStyle = inProgressColor
                 ctx.globalAlpha = pulse
                 ctx.fillRect(x, y, cellSize, cellSize)

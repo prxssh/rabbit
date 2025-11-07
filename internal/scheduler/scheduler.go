@@ -13,9 +13,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const peerMinInflightRequests = 5
+
 type Config struct {
 	DownloadStrategy         DownloadStrategy
-	RequestTimeout           time.Duration
 	EndgameThreshold         uint8
 	EndgameDuplicatePerBlock uint8
 }
@@ -23,7 +24,6 @@ type Config struct {
 func WithDefaultConfig() *Config {
 	return &Config{
 		DownloadStrategy:         DownloadStrategySequential,
-		RequestTimeout:           5 * time.Second,
 		EndgameThreshold:         5, // 5% of pieces
 		EndgameDuplicatePerBlock: 5,
 	}
@@ -122,6 +122,23 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
+func (s *Scheduler) UpdateConfig(newCfg *Config) {
+	if newCfg == nil {
+		return
+	}
+
+	s.mut.Lock()
+	oldStrategy := s.cfg.DownloadStrategy
+	s.cfg = newCfg
+	newStrategy := s.cfg.DownloadStrategy
+	s.mut.Unlock()
+
+	// If switching to sequential strategy, reset sequential state
+	if oldStrategy != DownloadStrategySequential && newStrategy == DownloadStrategySequential {
+		s.pieceManager.ResetSequentialState()
+	}
+}
+
 func (s *Scheduler) GetPeerEventQueue() chan<- Event {
 	return s.peerEvent
 }
@@ -177,6 +194,13 @@ func (s *Scheduler) listenVerifiedPieces(ctx context.Context) error {
 			return nil
 
 		case result, ok := <-s.pieceResult:
+			logger.Debug(
+				"received verified piece",
+				"piece",
+				result.PieceIdx,
+				"successful",
+				result.Success,
+			)
 			if !ok {
 				return nil
 			}
@@ -193,7 +217,7 @@ func (s *Scheduler) assignPeerWork(ctx context.Context) error {
 	logger := s.logger.With("source", "work assignment loop")
 	logger.Debug("started")
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -254,19 +278,30 @@ func (s *Scheduler) updateAvailability(bf bitfield.Bitfield, delta int) {
 }
 
 func (s *Scheduler) assignBlockToPeer(peer *peerState, block *piece.BlockInfo) {
+	s.mut.Lock()
 	s.inflightPieceRequests++
+	s.mut.Unlock()
+
 	key := blockKey(block.PieceIdx, block.Begin)
+
+	s.peerMut.Lock()
 	peer.blockAssignments[key] = struct{}{}
+	s.peerMut.Unlock()
 
 	select {
 	case peer.work <- NewRequestEvent(peer.addr, block.PieceIdx, block.Begin, block.Length):
-		s.logger.Debug("sent work to peer", "peer", peer.addr)
 
 	default:
 		s.logger.Warn("peer work queue full; dropping request", "peer", peer.addr)
 
+		s.mut.Lock()
 		s.inflightPieceRequests--
+		s.mut.Unlock()
+
+		s.peerMut.Lock()
 		delete(peer.blockAssignments, key)
+		s.peerMut.Unlock()
+
 		s.pieceManager.UnassignBlock(peer.addr, block.PieceIdx, block.Begin)
 	}
 }

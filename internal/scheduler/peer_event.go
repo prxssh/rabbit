@@ -251,6 +251,7 @@ func (s *Scheduler) handlePeerPieceEvent(addr netip.AddrPort, data PieceData) {
 	s.outBlocks <- &BlockData{
 		PieceIdx: data.PieceIdx,
 		Begin:    data.Begin,
+		Data:     data.Block,
 		PieceLen: s.pieceManager.PieceLength(data.PieceIdx),
 	}
 }
@@ -296,5 +297,5 @@ func (s *Scheduler) handlePeerSpeedEvent(addr netip.AddrPort, data PeerSpeedUpda
 	}
 
 	blockPerSecond := data.DownloadBytesPerSec / piece.MaxBlockLength
-	peer.maxInflightRequests = uint32(blockPerSecond)
+	peer.maxInflightRequests = max(5, uint32(blockPerSecond))
 }
