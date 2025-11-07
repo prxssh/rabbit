@@ -199,7 +199,7 @@ func (p *Peer) readMessagesLoop(ctx context.Context) error {
 				continue
 			}
 
-			l.Warn("failed to read message, exiting!", "error", err.Error())
+			l.Warn("failed to read message; exiting!", "error", err.Error())
 			return err
 		}
 

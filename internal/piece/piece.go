@@ -118,7 +118,7 @@ func (m *Manager) PieceCount() uint32 {
 
 func (m *Manager) PieceLength(pieceIdx uint32) uint32 {
 	m.mut.RLock()
-	defer m.mut.RLock()
+	defer m.mut.RUnlock()
 
 	return m.pieces[pieceIdx].length
 }
@@ -399,6 +399,7 @@ func (m *Manager) safeAssignBlock(
 		return nil, false
 	}
 
+	piece.status = StatusInflight
 	block.status = StatusInflight
 	block.owners = append(block.owners, &blockOwner{
 		peer:        peer,

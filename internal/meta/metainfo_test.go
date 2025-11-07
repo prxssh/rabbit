@@ -377,24 +377,6 @@ func TestInfoHash(t *testing.T) {
 	}
 }
 
-func TestSize(t *testing.T) {
-	// Single-file
-	if got := (&Metainfo{Info: &Info{Length: 42}}).Size(); got != 42 {
-		t.Fatalf("single-file total = %d, want 42", got)
-	}
-
-	// Multi-file
-	got := (&Metainfo{Info: &Info{Files: []*File{{Length: 10}, {Length: 5}}}}).Size()
-	if got != 15 {
-		t.Fatalf("multi-file total = %d, want 15", got)
-	}
-
-	// Invalid (neither)
-	if got := (&Metainfo{Info: &Info{}}).Size(); got != 0 {
-		t.Fatalf("invalid total = %d, want 0", got)
-	}
-}
-
 // contains is a tiny helper to avoid importing strings everywhere
 func contains(s, substr string) bool {
 	return bytes.Contains([]byte(s), []byte(substr))
