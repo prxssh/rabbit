@@ -34,7 +34,7 @@ func (bf Bitfield) Len() int { return len(bf) * 8 }
 // Has reports whether bit at index is set. Returns false if index is out of
 // range.
 func (bf Bitfield) Has(index int) bool {
-	if index < 0 || index >= bf.Len() {
+	if index < 0 || int(index) >= bf.Len() {
 		return false
 	}
 

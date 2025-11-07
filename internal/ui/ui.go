@@ -1,4 +1,4 @@
-package torrent
+package ui
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/prxssh/rabbit/internal/peer"
+	"github.com/prxssh/rabbit/internal/torrent"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -17,7 +18,7 @@ type Client struct {
 	ctx      context.Context
 	mu       sync.RWMutex
 	clientID [sha1.Size]byte
-	torrents map[[sha1.Size]byte]*Torrent
+	torrents map[[sha1.Size]byte]*torrent.Torrent
 }
 
 func NewClient() (*Client, error) {
@@ -30,7 +31,7 @@ func NewClient() (*Client, error) {
 		log:      slog.Default(),
 		ctx:      context.Background(),
 		clientID: clientID,
-		torrents: make(map[[sha1.Size]byte]*Torrent),
+		torrents: make(map[[sha1.Size]byte]*torrent.Torrent),
 	}, nil
 }
 
@@ -38,12 +39,12 @@ func (c *Client) Startup(ctx context.Context) {
 	c.ctx = ctx
 }
 
-func (c *Client) AddTorrent(data []byte, cfg *Config) (*Torrent, error) {
+func (c *Client) AddTorrent(data []byte, cfg *torrent.Config) (*torrent.Torrent, error) {
 	if cfg == nil {
-		cfg = WithDefaultConfig()
+		cfg = torrent.WithDefaultConfig()
 	}
 
-	torrent, err := NewTorrent(c.clientID, data, cfg)
+	torrent, err := torrent.NewTorrent(c.clientID, data, cfg)
 	if err != nil {
 		c.log.Error("failed to parse torrent", "error", err, "size", len(data))
 		return nil, err
@@ -66,8 +67,8 @@ func (c *Client) AddTorrent(data []byte, cfg *Config) (*Torrent, error) {
 	return torrent, nil
 }
 
-func (c *Client) GetDefaultConfig() *Config {
-	return WithDefaultConfig()
+func (c *Client) GetDefaultConfig() *torrent.Config {
+	return torrent.WithDefaultConfig()
 }
 
 func (c *Client) RemoveTorrent(infoHashHex string) error {
@@ -100,7 +101,7 @@ func (c *Client) RemoveTorrent(infoHashHex string) error {
 	return nil
 }
 
-func (c *Client) GetTorrentStats(infoHashHex string) *Stats {
+func (c *Client) GetTorrentStats(infoHashHex string) *torrent.Stats {
 	var infoHash [sha1.Size]byte
 
 	bytes, err := hex.DecodeString(infoHashHex)
@@ -119,7 +120,7 @@ func (c *Client) GetTorrentStats(infoHashHex string) *Stats {
 	return torrent.GetStats()
 }
 
-func (c *Client) GetTorrentConfig(infoHashHex string) *Config {
+func (c *Client) GetTorrentConfig(infoHashHex string) *torrent.Config {
 	var infoHash [sha1.Size]byte
 
 	bytes, err := hex.DecodeString(infoHashHex)
@@ -138,7 +139,7 @@ func (c *Client) GetTorrentConfig(infoHashHex string) *Config {
 	return torrent.GetConfig()
 }
 
-func (c *Client) UpdateTorrentConfig(infoHashHex string, cfg *Config) error {
+func (c *Client) UpdateTorrentConfig(infoHashHex string, cfg *torrent.Config) error {
 	var infoHash [sha1.Size]byte
 
 	bytes, err := hex.DecodeString(infoHashHex)

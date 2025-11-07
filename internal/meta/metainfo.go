@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prxssh/rabbit/pkg/bencode"
+	"github.com/prxssh/rabbit/internal/bencode"
 	"github.com/prxssh/rabbit/pkg/cast"
 )
 
