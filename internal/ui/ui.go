@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/prxssh/rabbit/internal/meta"
 	"github.com/prxssh/rabbit/internal/peer"
 	"github.com/prxssh/rabbit/internal/torrent"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -65,6 +66,17 @@ func (c *Client) AddTorrent(data []byte, cfg *torrent.Config) (*torrent.Torrent,
 
 	go func() { torrent.Run(c.ctx) }()
 	return torrent, nil
+}
+
+func (c *Client) AddMagnetTorrent(magnetURL string, cfg *torrent.Config) error {
+	parsedMagnetURL, err := meta.ParseMagnet(magnetURL)
+	if err != nil {
+		return err
+	}
+
+	c.log.Debug("magnet url parsed successfully", "parsed magnet", parsedMagnetURL)
+
+	return nil
 }
 
 func (c *Client) GetDefaultConfig() *torrent.Config {

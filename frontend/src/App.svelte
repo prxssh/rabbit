@@ -1,6 +1,7 @@
 <script lang="ts">
     import {
         AddTorrent,
+        AddMagnetTorrent,
         GetTorrentStats,
         RemoveTorrent,
         GetDefaultConfig,
@@ -27,9 +28,6 @@
         uploadSpeed: string
     }
 
-    let fileInput: HTMLInputElement
-    let isDragging = false
-    let selectedFile: File | null = null
     let uploadStatus = ''
     let torrents: TorrentItemData[] = []
     let selectedTorrentId: number | null = null
@@ -40,7 +38,6 @@
     let showAddDialog = false
     let showEditDialog = false
     let editingTorrentId: number | null = null
-    let pendingFile: File | null = null
     let defaultDownloadPath = ''
     let totalDownloadRate = 0
     let totalUploadRate = 0
@@ -56,50 +53,6 @@
             console.error('Failed to load default config:', error)
         }
     })
-
-    function handleDragOver(e: DragEvent) {
-        e.preventDefault()
-        isDragging = true
-    }
-
-    function handleDragLeave(e: DragEvent) {
-        e.preventDefault()
-        isDragging = false
-    }
-
-    async function handleDrop(e: DragEvent) {
-        e.preventDefault()
-        isDragging = false
-
-        const files = e.dataTransfer?.files
-        if (files && files.length > 0) {
-            const file = files[0]
-            if (file.name.endsWith('.torrent')) {
-                // Always show dialog for configuration
-                pendingFile = file
-                showAddDialog = true
-            } else {
-                uploadStatus = 'Error: Please select a .torrent file'
-            }
-        }
-    }
-
-    function handleFileSelect(e: Event) {
-        const target = e.target as HTMLInputElement
-        const files = target.files
-        if (files && files.length > 0) {
-            const file = files[0]
-            if (file.name.endsWith('.torrent')) {
-                // Always show dialog for configuration
-                pendingFile = file
-                showAddDialog = true
-            } else {
-                uploadStatus = 'Error: Please select a .torrent file'
-            }
-        }
-        // Reset input so the same file can be selected again
-        target.value = ''
-    }
 
     async function updateAllTorrentsStats() {
         let aggDownload = 0
@@ -175,7 +128,6 @@
 
             const result: torrent.Torrent = await AddTorrent(Array.from(bytes), config)
             uploadStatus = `Success: ${file.name} added`
-            selectedFile = null
 
             const newTorrent = {
                 id: Date.now(),
@@ -195,22 +147,52 @@
         }
     }
 
-    async function handleAddDialogConfirm(config: torrent.Config, remember: boolean) {
-        if (pendingFile) {
-            uploadTorrent(pendingFile, config)
-            pendingFile = null
+    async function addMagnetTorrent(magnetURL: string, config: torrent.Config) {
+        try {
+            uploadStatus = `Adding magnet link...`
 
-            // Update default download path if user checked "Remember this location"
-            if (remember && config.Storage?.DownloadDir) {
-                defaultDownloadPath = config.Storage.DownloadDir
-                // TODO: Persist this to app config
+            const result: torrent.Torrent = await AddMagnetTorrent(magnetURL, config)
+            uploadStatus = `Success: magnet link added`
+
+            const newTorrent = {
+                id: Date.now(),
+                fileName: result.metainfo?.info?.name || 'unknown',
+                size: result.metainfo?.size || 0,
+                torrentData: result,
+                status: 'downloading',
+                progress: 0,
+                downloadSpeed: '0 KB/s',
+                uploadSpeed: '0 KB/s',
             }
+
+            torrents = [...torrents, newTorrent]
+            selectedTorrentId = newTorrent.id
+        } catch (error) {
+            uploadStatus = `Error: ${error}`
+        }
+    }
+
+    async function handleAddDialogConfirm(data: {
+        config: torrent.Config
+        remember: boolean
+        magnetURL?: string
+        file?: File
+    }) {
+        const { config, remember, magnetURL, file } = data
+        if (magnetURL) {
+            addMagnetTorrent(magnetURL, config)
+        } else if (file) {
+            uploadTorrent(file, config)
+        }
+
+        if (remember && config.Storage?.DownloadDir) {
+            defaultDownloadPath = config.Storage.DownloadDir
+            // TODO: Persist this to app config
         }
         showAddDialog = false
     }
 
     function handleAddDialogCancel() {
-        pendingFile = null
         showAddDialog = false
     }
 
@@ -242,10 +224,6 @@
                 pieceStates = new Array(torrent.torrentData.metainfo.info.pieces.length).fill(0)
             }
         }
-    }
-
-    function openFileDialog() {
-        fileInput.click()
     }
 
     function openEditDialog(id: number) {
@@ -293,15 +271,10 @@
     })
 </script>
 
-<main
-    class={isDragging ? 'dragging' : ''}
-    on:dragover={handleDragOver}
-    on:dragleave={handleDragLeave}
-    on:drop={handleDrop}
->
+<main>
     <TopBar
         torrentCount={torrents.length}
-        onAddTorrent={openFileDialog}
+        onAddTorrent={() => (showAddDialog = true)}
         downloadSpeed={formatBytesPerSec(totalDownloadRate)}
         uploadSpeed={formatBytesPerSec(totalUploadRate)}
     />
@@ -309,7 +282,7 @@
     <div class="content">
         <div class="torrent-list">
             {#if torrents.length === 0}
-                <EmptyState onAddTorrent={openFileDialog} />
+                <EmptyState onAddTorrent={() => (showAddDialog = true)} />
             {:else}
                 {#each torrents as torrent (torrent.id)}
                     <TorrentItem
@@ -345,17 +318,8 @@
         isSuccess={uploadStatus.startsWith('Success')}
     />
 
-    <input
-        type="file"
-        accept=".torrent"
-        bind:this={fileInput}
-        on:change={handleFileSelect}
-        style="display: none"
-    />
-
     <AddTorrentDialog
         show={showAddDialog}
-        selectedFile={pendingFile}
         defaultPath={defaultDownloadPath}
         onConfirm={handleAddDialogConfirm}
         onCancel={handleAddDialogCancel}
@@ -382,21 +346,6 @@
         display: flex;
         flex-direction: column;
         background-color: var(--color-bg-primary);
-    }
-
-    main.dragging {
-        background-color: var(--color-bg-hover);
-    }
-
-    main.dragging::after {
-        content: 'Drop .torrent file to add';
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        font-size: var(--font-size-3xl);
-        color: var(--color-text-tertiary);
-        pointer-events: none;
     }
 
     .content {
