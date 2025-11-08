@@ -9,32 +9,35 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prxssh/rabbit/internal/bencode"
 	"github.com/prxssh/rabbit/pkg/cast"
 )
 
+const maxTrackerResponseSize = 2 * 1024 * 1024 // 2MB
+
 type HTTPTracker struct {
 	baseURL   *url.URL
 	client    *http.Client
+	mut       sync.RWMutex
 	trackerID string
-	log       *slog.Logger
+	logger    *slog.Logger
 }
 
-func NewHTTPTracker(url *url.URL, log *slog.Logger) (*HTTPTracker, error) {
-	log = log.With("type", "http")
+func NewHTTPTracker(url *url.URL, logger *slog.Logger) (*HTTPTracker, error) {
+	logger = logger.With("type", "http")
 
 	t := &http.Transport{
-		MaxIdleConns:          100,
-		IdleConnTimeout:       30 * time.Second,
-		DisableCompression:    false,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 15 * time.Second,
+		MaxIdleConns:        100,
+		IdleConnTimeout:     30 * time.Second,
+		DisableCompression:  false,
+		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
 	return &HTTPTracker{
-		log:     log,
+		logger:  logger,
 		baseURL: url,
 		client:  &http.Client{Transport: t, Timeout: 30 * time.Second},
 	}, nil
@@ -75,7 +78,9 @@ func (ht *HTTPTracker) Announce(
 	}
 
 	if r.TrackerID != "" {
+		ht.mut.Lock()
 		ht.trackerID = r.TrackerID
+		ht.mut.Unlock()
 	}
 
 	return r, nil
@@ -91,7 +96,7 @@ func (ht *HTTPTracker) buildAnnounceURL(params *AnnounceParams) string {
 	q.Set("uploaded", strconv.FormatUint(params.Uploaded, 10))
 	q.Set("downloaded", strconv.FormatUint(params.Downloaded, 10))
 	q.Set("left", strconv.FormatUint(params.Left, 10))
-	// q.Set("compact", "1")
+	q.Set("compact", "1")
 
 	if params.numWant > 0 {
 		q.Set("numwant", strconv.Itoa(int(params.numWant)))
@@ -102,7 +107,12 @@ func (ht *HTTPTracker) buildAnnounceURL(params *AnnounceParams) string {
 	if params.Event != EventNone {
 		q.Set("event", params.Event.String())
 	}
-	if ht.trackerID != "" {
+
+	ht.mut.RLock()
+	trackerID := ht.trackerID
+	ht.mut.RUnlock()
+
+	if trackerID != "" {
 		q.Set("trackerid", ht.trackerID)
 	}
 
@@ -111,7 +121,8 @@ func (ht *HTTPTracker) buildAnnounceURL(params *AnnounceParams) string {
 }
 
 func parseAnnounceResponse(r io.Reader) (*AnnounceResponse, error) {
-	data, err := io.ReadAll(r)
+	lr := io.LimitReader(r, maxTrackerResponseSize)
+	data, err := io.ReadAll(lr)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +131,7 @@ func parseAnnounceResponse(r io.Reader) (*AnnounceResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	dict, ok := raw.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("tracker: announce expected dict but got %T", raw)
@@ -158,27 +170,10 @@ func parseAnnounceResponse(r io.Reader) (*AnnounceResponse, error) {
 }
 
 func parsePeers(d map[string]any) ([]netip.AddrPort, error) {
-	var out []netip.AddrPort
-
-	if v, ok := d["peers"]; ok {
-		ps, err := decodePeers(v, false)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, ps...)
+	peersData, ok := d["peers"]
+	if !ok {
+		return nil, nil
 	}
 
-	/*
-		if config.Load().HasIPV6 {
-			if v6, ok := d["peers6"]; ok {
-				ps, err := decodePeers(v6, true)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, ps...)
-			}
-		}
-	*/
-
-	return out, nil
+	return decodePeers(peersData, false)
 }

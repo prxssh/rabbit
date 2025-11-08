@@ -94,10 +94,10 @@ func NewTorrent(clientID [sha1.Size]byte, data []byte, cfg *Config) (*Torrent, e
 		metainfo.Announce,
 		metainfo.AnnounceList,
 		&tracker.TrackerOpts{
-			Config:          cfg.Tracker,
-			Logger:          logger,
-			PeerAddrQueue:   peerManager.GetPeerConnectQueue(),
-			OnAnnounceStart: torrent.buildAnnounceParams,
+			Config:        cfg.Tracker,
+			Logger:        logger,
+			PeerAddrQueue: peerManager.GetPeerConnectQueue(),
+			GetState:      torrent.buildAnnounceParams,
 		},
 	)
 	if err != nil {

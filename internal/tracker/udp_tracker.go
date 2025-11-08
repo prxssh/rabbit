@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -16,7 +18,7 @@ const (
 	baseBackoff     = 15 * time.Second
 	connectionIDTTL = 60 * time.Second
 	maxRetries      = 8
-	maxUDPPacket    = 2048
+	maxUDPPacket    = 4096
 )
 
 const (
@@ -29,18 +31,22 @@ const (
 var (
 	errActionMismatch        = errors.New("action mismatch")
 	errTransactionIDMismatch = errors.New("transaction id mismatch")
+	errPacketTooShort        = errors.New("packet too short")
+	errAttemptsExhausted     = errors.New("tracker: exhausted all attempts")
 )
 
 type UDPTracker struct {
+	logger    *slog.Logger
+	mut       sync.Mutex
 	conn      *net.UDPConn
 	key       uint32
 	connID    uint64
 	connIDTTL time.Time
-	log       *slog.Logger
+	readBuf   []byte // reusable read buffer
 }
 
-func NewUDPTracker(url *url.URL, log *slog.Logger) (*UDPTracker, error) {
-	log = log.With("type", "udp")
+func NewUDPTracker(url *url.URL, logger *slog.Logger) (*UDPTracker, error) {
+	logger = logger.With("type", "udp")
 
 	addr, err := net.ResolveUDPAddr("udp", url.Host)
 	if err != nil {
@@ -57,9 +63,10 @@ func NewUDPTracker(url *url.URL, log *slog.Logger) (*UDPTracker, error) {
 	}
 
 	return &UDPTracker{
-		conn: conn,
-		key:  key,
-		log:  log,
+		conn:    conn,
+		key:     key,
+		logger:  logger,
+		readBuf: make([]byte, maxUDPPacket),
 	}, nil
 }
 
@@ -67,89 +74,131 @@ func (ut *UDPTracker) Announce(
 	ctx context.Context,
 	params *AnnounceParams,
 ) (*AnnounceResponse, error) {
-	deadline, hasDeadline := ctx.Deadline()
+	ut.mut.Lock()
+	defer ut.mut.Unlock()
 
+	if time.Now().After(ut.connIDTTL) {
+		if err := ut.performConnect(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	resp, err := ut.performAnnounce(ctx, params)
+	if err == nil {
+		return resp, nil
+	}
+
+	if errors.Is(err, errActionMismatch) || errors.Is(err, errTransactionIDMismatch) {
+		ut.logger.Warn(
+			"announce failed, connection ID may be stale, reconnecting...",
+			"error", err,
+		)
+		ut.connIDTTL = time.Time{}
+
+		if err := ut.performConnect(ctx); err != nil {
+			return nil, err
+		}
+
+		return ut.performAnnounce(ctx, params)
+	}
+
+	return nil, err
+}
+
+func (ut *UDPTracker) performConnect(ctx context.Context) error {
+	for n := 0; n < maxRetries; n++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		timeout, err := getTimeout(ctx, n)
+		if err != nil {
+			return err
+		}
+		_ = ut.conn.SetDeadline(time.Now().Add(timeout))
+
+		transactionID, err := randU32()
+		if err != nil {
+			ut.logger.Warn("udp connect txid rand error", "error", err.Error())
+			continue
+		}
+
+		if err := ut.sendConnectPacket(transactionID); err != nil {
+			ut.logger.Warn("udp connect send error", "error", err.Error(), "retry", n)
+			continue
+		}
+
+		connID, err := ut.readConnectPacket(transactionID)
+		if err != nil {
+			ut.logger.Warn("udp connect read error", "error", err.Error(), "retry", n)
+			continue
+		}
+
+		ut.connID = connID
+		ut.connIDTTL = time.Now().Add(connectionIDTTL)
+		ut.logger.Debug("udp connect success", "connID", connID)
+
+		return nil
+	}
+
+	return errAttemptsExhausted
+}
+
+func (ut *UDPTracker) performAnnounce(
+	ctx context.Context,
+	params *AnnounceParams,
+) (*AnnounceResponse, error) {
 	for n := 0; n < maxRetries; n++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 
-		timeout := backoffWindow(deadline, hasDeadline, n)
-		if timeout <= 0 {
-			return nil, context.DeadlineExceeded
+		timeout, err := getTimeout(ctx, n)
+		if err != nil {
+			return nil, err
 		}
 		_ = ut.conn.SetDeadline(time.Now().Add(timeout))
 
-		if time.Now().After(ut.connIDTTL) {
-			transactionID, err := randU32()
-			if err != nil {
-				ut.log.Warn("udp connect txid rand error", "error", err)
-				continue
-			}
-
-			if err := ut.sendConnectPacket(transactionID); err != nil {
-				ut.log.Warn("udp connect send error", "error", err)
-				continue
-			}
-
-			connID, err := ut.readConnectPacket(transactionID)
-			if err != nil {
-				ut.log.Warn("udp connect read error", "err", err)
-				continue
-			}
-			ut.connID = connID
-			ut.connIDTTL = time.Now().Add(connectionIDTTL)
-		}
-
 		transactionID, err := randU32()
 		if err != nil {
-			ut.log.Warn("udp announce txid rand error", "error", err)
+			ut.logger.Warn("udp announce txid rand error", "error", err.Error())
 			continue
 		}
 
-		start := time.Now()
-		if err := ut.sendAnnouncePacket(transactionID, ut.connID, params); err != nil {
-			ut.log.Warn("udp announce send error", "error", err)
+		if err := ut.sendAnnouncePacket(transactionID, params); err != nil {
+			ut.logger.Warn("udp announce send error", "error", err.Error(), "retry", n)
 			continue
 		}
 
 		resp, err := ut.readAnnouncePacket(transactionID)
-		lat := time.Since(start)
 		if err != nil {
 			if errors.Is(err, errActionMismatch) ||
 				errors.Is(err, errTransactionIDMismatch) {
-				ut.connIDTTL = time.Time{}
-
-				ut.log.Warn(
-					"udp announce protocol mismatch",
-					"error",
-					err,
-					"retry",
-					n+1,
+				ut.logger.Warn(
+					"udp announce failed, connection ID stale",
+					"error", err.Error(),
 				)
-			} else {
-				ut.log.Warn("udp announce read error", "latency", lat, "err", err, "retry", n+1)
+				return nil, err
 			}
+
 			continue
 		}
 
 		return resp, nil
 	}
 
-	return nil, errors.New("tracker: exhausted all announce attempts")
+	return nil, errAttemptsExhausted
 }
 
 func (ut *UDPTracker) sendConnectPacket(transactionID uint32) error {
 	var packet [16]byte
+
 	binary.BigEndian.PutUint64(packet[0:8], protocolID)
 	binary.BigEndian.PutUint32(packet[8:12], actionConnect)
 	binary.BigEndian.PutUint32(packet[12:16], transactionID)
+	_, err := ut.conn.Write(packet[:])
 
-	if _, err := ut.conn.Write(packet[:]); err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func (ut *UDPTracker) readConnectPacket(transactionID uint32) (uint64, error) {
@@ -160,12 +209,12 @@ func (ut *UDPTracker) readConnectPacket(transactionID uint32) (uint64, error) {
 		return 0, err
 	}
 	if nread < 16 {
-		return 0, errors.New("small packet size")
+		return 0, errPacketTooShort
 	}
 
 	action := binary.BigEndian.Uint32(packet[0:4])
 	if action == actionError {
-		return 0, errors.New(string(packet[8:nread]))
+		return 0, fmt.Errorf("tracker error: %s", string(packet[8:nread]))
 	}
 	if action != actionConnect {
 		return 0, errActionMismatch
@@ -179,14 +228,10 @@ func (ut *UDPTracker) readConnectPacket(transactionID uint32) (uint64, error) {
 	return binary.BigEndian.Uint64(packet[8:16]), nil
 }
 
-func (ut *UDPTracker) sendAnnouncePacket(
-	transactionID uint32,
-	connectionID uint64,
-	params *AnnounceParams,
-) error {
+func (ut *UDPTracker) sendAnnouncePacket(transactionID uint32, params *AnnounceParams) error {
 	var packet [98]byte
 
-	binary.BigEndian.PutUint64(packet[0:8], connectionID)
+	binary.BigEndian.PutUint64(packet[0:8], ut.connID)
 	binary.BigEndian.PutUint32(packet[8:12], actionAnnounce)
 	binary.BigEndian.PutUint32(packet[12:16], transactionID)
 	copy(packet[16:36], params.InfoHash[:])
@@ -200,39 +245,26 @@ func (ut *UDPTracker) sendAnnouncePacket(
 	binary.BigEndian.PutUint32(packet[92:96], params.numWant)
 	binary.BigEndian.PutUint16(packet[96:98], params.port)
 
-	n, err := ut.conn.Write(packet[:])
-	if err != nil {
-		return err
-	}
-
-	ut.log.Debug("udp announce send",
-		"bytes", n,
-		"txid", uint64(transactionID),
-		"conn_id", connectionID,
-		"uploaded", params.Uploaded,
-		"downloaded", params.Downloaded,
-		"left", params.Left,
-		"event", params.Event.String(),
-	)
-
-	return nil
+	_, err := ut.conn.Write(packet[:])
+	return err
 }
 
 func (ut *UDPTracker) readAnnouncePacket(
 	transactionID uint32,
 ) (*AnnounceResponse, error) {
-	packet := make([]byte, maxUDPPacket)
-	nread, err := ut.conn.Read(packet)
+	nread, err := ut.conn.Read(ut.readBuf)
 	if err != nil {
 		return nil, err
 	}
+
+	packet := ut.readBuf[:nread]
 	if nread < 20 {
-		return nil, errors.New("announce resp too short")
+		return nil, errPacketTooShort
 	}
 
 	action := binary.BigEndian.Uint32(packet[0:4])
 	if action == actionError {
-		return nil, errors.New(string(packet[8:nread]))
+		return nil, fmt.Errorf("tracker error: %s", string(packet[8:nread]))
 	}
 	if action != actionAnnounce {
 		return nil, errActionMismatch
@@ -247,7 +279,7 @@ func (ut *UDPTracker) readAnnouncePacket(
 	leechers := binary.BigEndian.Uint32(packet[12:16])
 	seeders := binary.BigEndian.Uint32(packet[16:20])
 
-	peers, err := decodePeers(packet[20:nread], false)
+	peers, err := decodePeers(packet[20:], false)
 	if err != nil {
 		return nil, err
 	}
@@ -269,18 +301,18 @@ func randU32() (uint32, error) {
 	return binary.BigEndian.Uint32(b[:]), nil
 }
 
-func backoffWindow(deadline time.Time, hasDeadline bool, n int) time.Duration {
-	d := baseBackoff << n
-	if !hasDeadline {
-		return d
+func getTimeout(ctx context.Context, n int) (time.Duration, error) {
+	timeout := baseBackoff * (1 << n)
+
+	if deadline, ok := ctx.Deadline(); ok {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			return 0, context.DeadlineExceeded
+		}
+		if remain < timeout {
+			return remain, nil
+		}
 	}
 
-	remain := time.Until(deadline)
-	if remain <= 0 {
-		return 0
-	}
-	if remain < d {
-		return remain
-	}
-	return d
+	return timeout, nil
 }

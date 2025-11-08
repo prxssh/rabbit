@@ -17,24 +17,32 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const (
-	maxBackoffShift        = 5
-	maxConsecutiveFailures = 5
-)
+const baseDelay = 15 * time.Second
 
 type Config struct {
-	// NumWant is the maximum number of peers to request the tracker.
+	// NumWant is the maximutm number of peers to request the tracker.
 	NumWant uint32
 
 	// AnnounceInterval overrides tracker's suggested interval.
 	// 0 uses tracker default.
 	AnnounceInterval time.Duration
 
+	// DefaultAnnounceInterval is used if the tracker provides no interval.
+	DefaultAnnounceInterval time.Duration
+
 	// MinAnnounceInterval enforces a minimum time between announces.
 	MinAnnounceInterval time.Duration
 
 	// MaxAnnounceBackoff caps exponential backoff for failed announces.
 	MaxAnnounceBackoff time.Duration
+
+	// MaxBackoffShift is the maximum exponential factor (2^n)
+	// for backoff.
+	MaxBackoffShift int
+
+	// MaxConsecutiveFailures is the number of failures before
+	// stopping the loop.
+	MaxConsecutiveFailures int
 
 	// Port is the TCP port this client listens on for incoming peer
 	// connections.
@@ -43,11 +51,14 @@ type Config struct {
 
 func WithDefaultConfig() *Config {
 	return &Config{
-		NumWant:             50,
-		AnnounceInterval:    0,
-		MinAnnounceInterval: 20 * time.Minute,
-		MaxAnnounceBackoff:  45 * time.Minute,
-		Port:                8080,
+		NumWant:                 50,
+		AnnounceInterval:        0,
+		DefaultAnnounceInterval: 15 * time.Minute,
+		MinAnnounceInterval:     5 * time.Minute,
+		MaxAnnounceBackoff:      30 * time.Minute,
+		MaxBackoffShift:         5, // 2^5 = 32 * 15s = ~8m
+		MaxConsecutiveFailures:  5,
+		Port:                    6969,
 	}
 }
 
@@ -123,29 +134,33 @@ type TrackerMetrics struct {
 }
 
 type Tracker struct {
-	cfg             *Config
-	tiers           [][]*url.URL
-	mu              sync.Mutex
-	trackers        map[string]TrackerProtocol
-	logger          *slog.Logger
-	stats           *Stats
-	peerAddrQueue   chan<- netip.AddrPort
-	onAnnounceStart func() *AnnounceParams
+	cfg    *Config
+	logger *slog.Logger
+
+	tierMut sync.RWMutex
+	tiers   [][]*url.URL
+
+	trackerMut sync.Mutex
+	trackers   map[string]TrackerProtocol
+
+	stats         *Stats
+	peerAddrQueue chan<- netip.AddrPort
+	getState      func() *AnnounceParams
 }
 
 type TrackerOpts struct {
-	OnAnnounceStart func() *AnnounceParams
-	PeerAddrQueue   chan<- netip.AddrPort
-	Logger          *slog.Logger
-	Config          *Config
+	GetState      func() *AnnounceParams
+	PeerAddrQueue chan<- netip.AddrPort
+	Logger        *slog.Logger
+	Config        *Config
 }
 
 func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*Tracker, error) {
 	if opts.Config == nil {
-		return nil, errors.New("config missing")
+		return nil, errors.New("tracker: config missing")
 	}
-	if opts.OnAnnounceStart == nil {
-		return nil, errors.New("OnAnnounceStart hook missing")
+	if opts.GetState == nil {
+		return nil, errors.New("tracker: GetState hook missing")
 	}
 
 	tiers, err := buildAnnounceURLs(announce, announceList)
@@ -154,7 +169,6 @@ func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*T
 	}
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-
 	for i := range tiers {
 		if len(tiers[i]) < 2 {
 			continue
@@ -165,22 +179,24 @@ func NewTracker(announce string, announceList [][]string, opts *TrackerOpts) (*T
 		})
 	}
 
-	log := opts.Logger.With("souce", "tracker", "tiers", len(tiers))
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 
 	return &Tracker{
-		cfg:             opts.Config,
-		logger:          log,
-		tiers:           tiers,
-		stats:           &Stats{},
-		peerAddrQueue:   opts.PeerAddrQueue,
-		onAnnounceStart: opts.OnAnnounceStart,
-		trackers:        make(map[string]TrackerProtocol),
+		cfg:           opts.Config,
+		logger:        logger.With("source", "tracker"),
+		tiers:         tiers,
+		stats:         &Stats{},
+		peerAddrQueue: opts.PeerAddrQueue,
+		getState:      opts.GetState,
+		trackers:      make(map[string]TrackerProtocol),
 	}, nil
 }
 
 func (t *Tracker) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
-
 	g.Go(func() error { return t.announceLoop(gctx) })
 
 	return g.Wait()
@@ -245,6 +261,18 @@ func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*Announ
 			t.stats.CurrentSeeders.Store(resp.Seeders)
 			t.stats.CurrentLeechers.Store(resp.Leechers)
 
+			if t.peerAddrQueue != nil && params.Event != EventStopped {
+				for _, peer := range resp.Peers {
+					select {
+					case t.peerAddrQueue <- peer:
+					default:
+						t.logger.Debug(
+							"peer addr queue full; droppping peer",
+						)
+					}
+				}
+			}
+
 			t.logger.Info("announce success",
 				"tier", tierIdx,
 				"url", u.String(),
@@ -261,7 +289,7 @@ func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*Announ
 
 	t.stats.FailedAnnounces.Add(1)
 	if lastErr == nil {
-		lastErr = errors.New("tracker: all tiers exhausted")
+		lastErr = errors.New("tracker: no trackers available to announce")
 	}
 
 	return nil, lastErr
@@ -272,79 +300,69 @@ func (t *Tracker) announceLoop(ctx context.Context) error {
 	l.Debug("started")
 
 	consecutiveFailures := 0
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	runOnce := func() error {
-		if consecutiveFailures >= maxConsecutiveFailures {
-			return errors.New("failed announce; exhausted all attempts")
-		}
-
-		resp, err := t.Announce(ctx, t.onAnnounceStart())
-		if err != nil {
-			consecutiveFailures++
-			backoff := calculateBackoff(
-				consecutiveFailures,
-				maxBackoffShift,
-				t.cfg.MaxAnnounceBackoff,
-			)
-			ticker.Reset(backoff)
-			return err
-		}
-
-		consecutiveFailures = 0
-
-		for _, peer := range resp.Peers {
-			select {
-			case t.peerAddrQueue <- peer:
-
-			default:
-				l.Debug("peer addr queue full; dropping")
-			}
-		}
-
-		ticker.Reset(getNextAnnounceInterval(
-			resp,
-			t.cfg.AnnounceInterval,
-			t.cfg.MinAnnounceInterval,
-		))
-
-		return nil
-	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			l.Warn("context done; exiting!", "error", ctx.Err())
 			sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-			params := t.onAnnounceStart()
+			params := t.getState()
 			params.Event = EventStopped
 			_, _ = t.Announce(sctx, params)
-
 			scancel()
+
 			return nil
 
-		case <-ticker.C:
-			if err := runOnce(); err != nil {
-				t.logger.Error("failed to announce", "error", err.Error())
-				return err
+		case <-timer.C:
+			if consecutiveFailures >= t.cfg.MaxConsecutiveFailures {
+				return fmt.Errorf(
+					"tracker: exceeded max %d consecutive failures",
+					t.cfg.MaxConsecutiveFailures,
+				)
 			}
 
+			var nextInterval time.Duration
+
+			params := t.getState()
+			resp, err := t.Announce(ctx, params)
+			if err != nil {
+				consecutiveFailures++
+				l.Warn(
+					"announce failed, backing off",
+					"error",
+					err,
+					"failures",
+					consecutiveFailures+1,
+				)
+
+				nextInterval = calculateBackoff(
+					consecutiveFailures,
+					t.cfg.MaxBackoffShift,
+					t.cfg.MaxAnnounceBackoff,
+				)
+			} else {
+				consecutiveFailures = 0
+				nextInterval = getNextAnnounceInterval(resp, t.cfg.AnnounceInterval, t.cfg.MinAnnounceInterval, t.cfg.DefaultAnnounceInterval)
+
+				l.Debug("announce success, next in", "interval", nextInterval)
+			}
+
+			timer.Reset(nextInterval)
 		}
 	}
 }
 
 func (t *Tracker) snapshotTier(at int) []*url.URL {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.tierMut.Lock()
+	defer t.tierMut.Unlock()
 
 	return append([]*url.URL(nil), t.tiers[at]...)
 }
 
 func (t *Tracker) promoteWithinTier(tierIdx, urlIdx int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.tierMut.Lock()
+	defer t.tierMut.Unlock()
 
 	tier := t.tiers[tierIdx]
 	if urlIdx <= 0 || urlIdx >= len(tier) {
@@ -355,7 +373,7 @@ func (t *Tracker) promoteWithinTier(tierIdx, urlIdx int) {
 	copy(tier[1:urlIdx+1], tier[0:urlIdx])
 	tier[0] = u
 
-	t.logger.Debug("announce promote",
+	t.logger.Debug("promoted tracker within tier",
 		"tier", tierIdx,
 		"from", urlIdx,
 		"url", u.String(),
@@ -365,12 +383,15 @@ func (t *Tracker) promoteWithinTier(tierIdx, urlIdx int) {
 func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 	key := u.String()
 
-	t.mu.Lock()
+	t.trackerMut.Lock()
 	tr, ok := t.trackers[key]
-	t.mu.Unlock()
+	t.trackerMut.Unlock()
 	if ok {
 		return tr, nil
 	}
+
+	t.trackerMut.Lock()
+	defer t.trackerMut.Unlock()
 
 	log := t.logger.With("scheme", u.Scheme, "host", u.Host, "path", u.EscapedPath())
 
@@ -385,18 +406,14 @@ func (t *Tracker) getTracker(u *url.URL) (TrackerProtocol, error) {
 	case "udp":
 		tracker, err = NewUDPTracker(u, log)
 	default:
-		err = fmt.Errorf("tracker: unsupported schema %q", u.Scheme)
+		err = fmt.Errorf("tracker: unsupported scheme %q", u.Scheme)
 	}
-
 	if err != nil {
 		return nil, err
 	}
 
-	t.mu.Lock()
 	t.trackers[key] = tracker
-	t.mu.Unlock()
-
-	t.logger.Debug("tracker cached")
+	t.logger.Debug("new tracker client cached", "url", key)
 
 	return tracker, nil
 }
@@ -412,7 +429,6 @@ func buildAnnounceURLs(announce string, announceList [][]string) ([][]*url.URL, 
 
 	for _, tier := range announceList {
 		out := make([]*url.URL, 0, len(tier))
-
 		for _, str := range tier {
 			if u, ok := parseTrackerURL(str); ok {
 				out = append(out, u)
@@ -425,7 +441,7 @@ func buildAnnounceURLs(announce string, announceList [][]string) ([][]*url.URL, 
 	}
 
 	if len(tiers) == 0 {
-		return nil, errors.New("tracker: no announce urls")
+		return nil, errors.New("tracker: no vald announce urls found")
 	}
 	return tiers, nil
 }
@@ -444,37 +460,37 @@ func parseTrackerURL(raw string) (*url.URL, bool) {
 	}
 }
 
-func calculateBackoff(failures int, maxShift int, maxAnnounceBackoff time.Duration) time.Duration {
-	const baseDelay = 15 * time.Second
+func calculateBackoff(failures, maxShift int, maxAnnounceBackoff time.Duration) time.Duration {
+	shift := min(maxShift, failures-1)
+	delay := min(maxAnnounceBackoff, baseDelay*(1<<uint(shift)))
 
-	shift := failures - 1
-	if shift > maxShift {
-		shift = maxShift
-	}
-
-	delay := max(maxAnnounceBackoff, baseDelay*(1<<uint(shift)))
+	// jitter: [0.75 * delay, 1.25 * delay]
 	jitter := time.Duration(rand.Int63n(int64(delay) / 2))
 	return delay - (delay / 4) + jitter
 }
 
 func getNextAnnounceInterval(
 	resp *AnnounceResponse,
-	announceInterval, minAnnounceInterval time.Duration,
+	userInterval, minInterval, defaultInterval time.Duration,
 ) time.Duration {
-	interval := announceInterval
-	if interval == 0 {
-		interval = 2 * time.Minute
+	interval := resp.Interval
+
+	if interval > 0 {
+		// use tracker interval
+	} else if userInterval > 0 {
+		// user provided interval
+		interval = userInterval
+	} else {
+		// fallback to default
+		interval = defaultInterval
 	}
 
-	if resp.Interval > 0 {
-		interval = resp.Interval
-	}
-	if resp.MinInterval > 0 && resp.MinInterval > interval {
+	if resp.MinInterval > interval {
 		interval = resp.MinInterval
 	}
 
-	if minAnnounceInterval > 0 && interval < minAnnounceInterval {
-		interval = minAnnounceInterval
+	if interval < minInterval {
+		interval = minInterval
 	}
 
 	return interval
