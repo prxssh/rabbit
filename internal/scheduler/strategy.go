@@ -100,7 +100,7 @@ func (s *Scheduler) selectRarestFirstBlocks(peer *peerState, n uint32) {
 		return
 	}
 
-	pieceIndices := make([]uint32, 0)
+	pieceIndices := make([]uint32, 0, n)
 
 	for a := rarestAvail; a <= s.pieceAvailabilityBucket.MaxAvailability(); a++ {
 		bucket := s.pieceAvailabilityBucket.Bucket(a)
@@ -116,10 +116,15 @@ func (s *Scheduler) selectRarestFirstBlocks(peer *peerState, n uint32) {
 			if peer.pieces.Has(pieceIdx) &&
 				!s.pieceManager.PieceComplete(uint32(pieceIdx)) {
 				pieceIndices = append(pieceIndices, uint32(pieceIdx))
+
+				if uint32(len(pieceIndices)) >= n {
+					goto assign
+				}
 			}
 		}
 	}
 
+assign:
 	assignedBlocks, _ := s.pieceManager.AssignBlocksFromList(peer.addr, pieceIndices, n)
 	for _, block := range assignedBlocks {
 		s.assignBlockToPeer(peer, block)

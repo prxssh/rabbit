@@ -403,6 +403,10 @@ func (m *Manager) AssignBlocksFromList(
 		piece := m.pieces[pieceIdx]
 
 		for blockIdx := uint32(0); blockIdx < piece.blockCount; blockIdx++ {
+			if piece.blocks[blockIdx].status != StatusWant {
+				continue
+			}
+
 			block, ok := m.safeAssignBlock(peer, piece.index, blockIdx, 1)
 			if ok {
 				assigned = append(assigned, block)
