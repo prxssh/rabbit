@@ -1,5 +1,5 @@
 <script lang="ts">
-    export let variant: 'success' | 'error' | 'info' = 'info'
+    export let variant: 'success' | 'error' | 'info' | 'primary' | 'default' = 'info'
     export let text: string
 </script>
 
@@ -8,6 +8,8 @@
     class:success={variant === 'success'}
     class:error={variant === 'error'}
     class:info={variant === 'info'}
+    class:primary={variant === 'primary'}
+    class:default={variant === 'default'}
 >
     {text}
 </span>
@@ -35,6 +37,18 @@
     }
 
     .badge.info {
+        background-color: rgba(59, 130, 246, 0.1);
+        color: rgb(59, 130, 246);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .badge.primary {
+        background-color: rgba(139, 92, 246, 0.1);
+        color: rgb(139, 92, 246);
+        border: 1px solid rgba(139, 92, 246, 0.3);
+    }
+
+    .badge.default {
         background-color: var(--color-bg-tertiary);
         color: var(--color-text-tertiary);
         border: 1px solid var(--color-border-tertiary);

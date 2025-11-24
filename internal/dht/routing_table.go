@@ -77,7 +77,7 @@ func (rt *RoutingTable) FindClosestK(target [sha1.Size]byte, k int) []*Contact {
 	var contacts []*Contact
 	contacts = append(contacts, rt.buckets[targetBucket].All()...)
 
-	for i := 1; len(contacts) < k && (targetBucket-i >= 0 || targetBucket+1 < BucketSize); i++ {
+	for i := 1; len(contacts) < k && (targetBucket-i >= 0 || targetBucket+i < BucketSize); i++ {
 		if targetBucket-i >= 0 {
 			contacts = append(contacts, rt.buckets[targetBucket-i].All()...)
 		}
@@ -86,7 +86,7 @@ func (rt *RoutingTable) FindClosestK(target [sha1.Size]byte, k int) []*Contact {
 			break
 		}
 
-		if targetBucket+1 < BucketSize {
+		if targetBucket+i < BucketSize {
 			contacts = append(contacts, rt.buckets[targetBucket+i].All()...)
 		}
 	}

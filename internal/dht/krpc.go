@@ -165,7 +165,7 @@ func (k *KRPC) readLoop() {
 
 		data, err := bencode.Unmarshal(buf[:n])
 		if err != nil {
-			k.logger.Error("malformed message", "error", err.Error())
+			k.logger.Debug("malformed message", "error", err.Error(), "from", addr)
 			continue
 		}
 
@@ -178,8 +178,6 @@ func (k *KRPC) readLoop() {
 }
 
 func (k *KRPC) timeoutLoop() {
-	defer k.wg.Done()
-
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -228,11 +226,14 @@ func (k *KRPC) handleResponse(msg *Message) {
 	k.txMut.RUnlock()
 
 	if !exists {
+		k.logger.Debug("Received response for unknown transaction", "from", msg.Addr)
 		if k.responseHandler != nil {
 			k.responseHandler(msg)
 		}
 		return
 	}
+
+	k.logger.Debug("Received response", "from", msg.Addr, "txid", msg.T)
 
 	select {
 	case tx.responseCh <- msg:

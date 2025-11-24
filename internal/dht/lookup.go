@@ -83,6 +83,8 @@ func (l *Lookup) Run() *LookupResult {
 		return &LookupResult{Err: errors.New("no nodes in routing table")}
 	}
 
+	l.dht.config.Logger.Debug("Starting lookup", "type", l.lookupType, "seeds", len(seeds))
+
 	var wg sync.WaitGroup
 	for i := 0; i < Alpha; i++ {
 		wg.Add(1)
@@ -107,12 +109,14 @@ func (l *Lookup) Run() *LookupResult {
 		case <-timeout:
 			close(l.done)
 			wg.Wait()
+			l.dht.config.Logger.Warn("Lookup timeout", "type", l.lookupType, "contacted", len(l.contacted), "closest", l.closest.Len())
 			return l.buildResult(errors.New("lookup timeout"))
 
 		case <-ticker.C:
 			if l.isComplete() {
 				close(l.done)
 				wg.Wait()
+				l.dht.config.Logger.Debug("Lookup complete", "type", l.lookupType, "contacted", len(l.contacted), "peers", len(l.peers))
 				return l.buildResult(nil)
 			}
 

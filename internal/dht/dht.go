@@ -38,6 +38,13 @@ type Config struct {
 	BootstrapNodes []string // "ip:port" format
 }
 
+func WithDefaultConfig() *Config {
+	return &Config{
+		ListenAddr:     "0.0.0.0:6881",
+		BootstrapNodes: DefaultBootstrapNodes,
+	}
+}
+
 func NewDHT(config *Config) (*DHT, error) {
 	krpc, err := NewKRPC(config.LocalID, config.ListenAddr, config.Logger)
 	if err != nil {
@@ -89,15 +96,13 @@ func (d *DHT) Stop() {
 		d.mu.Unlock()
 		return
 	}
+
+	d.started = false
 	d.mu.Unlock()
 
 	close(d.done)
 	d.krpc.Stop()
 	d.wg.Wait()
-
-	d.mu.Lock()
-	d.started = false
-	d.mu.Unlock()
 }
 
 func (d *DHT) GetPeers(infoHash [sha1.Size]byte) ([]net.Addr, error) {
@@ -115,13 +120,11 @@ func (d *DHT) GetPeers(infoHash [sha1.Size]byte) ([]net.Addr, error) {
 	return result.Peers, nil
 }
 
-// AnnouncePeer announces that we are downloading/seeding a torrent.
 func (d *DHT) AnnouncePeer(infoHash [sha1.Size]byte, port int) error {
 	if !d.isStarted() {
 		return ErrNotStarted
 	}
 
-	// First get peers to obtain tokens
 	lookup := NewLookup(d, infoHash, LookupTypePeers)
 	result := lookup.Run()
 
@@ -129,7 +132,6 @@ func (d *DHT) AnnouncePeer(infoHash [sha1.Size]byte, port int) error {
 		return result.Err
 	}
 
-	// Announce to closest nodes that returned tokens
 	var wg sync.WaitGroup
 	for _, node := range result.ClosestNodes {
 		if node.Token == "" {
@@ -147,7 +149,6 @@ func (d *DHT) AnnouncePeer(infoHash [sha1.Size]byte, port int) error {
 	return nil
 }
 
-// announce sends announce_peer to a single node.
 func (d *DHT) announce(contact *Contact, infoHash [sha1.Size]byte, port int, token string) {
 	msg := AnnouncePeerQuery(d.krpc.generateTransactionID(), d.localID, infoHash, port, token)
 
@@ -155,7 +156,6 @@ func (d *DHT) announce(contact *Contact, infoHash [sha1.Size]byte, port int, tok
 	d.krpc.SendQuery(msg, contact.Addr(), timeout)
 }
 
-// Ping sends a ping to a node and updates routing table.
 func (d *DHT) Ping(addr *net.UDPAddr) error {
 	if !d.isStarted() {
 		return ErrNotStarted
@@ -169,7 +169,6 @@ func (d *DHT) Ping(addr *net.UDPAddr) error {
 		return err
 	}
 
-	// Extract node ID and update routing table
 	nodeID, ok := response.GetNodeID()
 	if !ok {
 		return ErrInvalidMsg
@@ -178,7 +177,7 @@ func (d *DHT) Ping(addr *net.UDPAddr) error {
 	contact := NewContact(&Node{
 		ID:   nodeID,
 		IP:   addr.IP,
-		Port: int16(addr.Port),
+		Port: addr.Port,
 	})
 	contact.MarkSeen()
 	d.table.Insert(contact)
@@ -186,7 +185,6 @@ func (d *DHT) Ping(addr *net.UDPAddr) error {
 	return nil
 }
 
-// FindNode performs iterative lookup to find nodes close to target.
 func (d *DHT) FindNode(target [sha1.Size]byte) ([]*Contact, error) {
 	if !d.isStarted() {
 		return nil, ErrNotStarted
@@ -207,14 +205,11 @@ func (d *DHT) FindNode(target [sha1.Size]byte) ([]*Contact, error) {
 	return contacts, nil
 }
 
-// bootstrapLoop performs initial bootstrap.
 func (d *DHT) bootstrapLoop() {
 	defer d.wg.Done()
 
-	// Bootstrap immediately on start
 	d.bootstrap()
 
-	// Re-bootstrap every hour
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
@@ -228,26 +223,41 @@ func (d *DHT) bootstrapLoop() {
 	}
 }
 
-// bootstrap contacts bootstrap nodes and performs self-lookup.
 func (d *DHT) bootstrap() {
-	// Ping bootstrap nodes
+	d.config.Logger.Info("Starting DHT bootstrap", "nodes", len(d.config.BootstrapNodes))
+
+	successCount := 0
 	for _, addrStr := range d.config.BootstrapNodes {
 		addr, err := net.ResolveUDPAddr("udp", addrStr)
 		if err != nil {
+			d.config.Logger.Warn("Failed to resolve bootstrap node", "addr", addrStr, "error", err)
 			continue
 		}
 
-		d.Ping(addr)
+		err = d.Ping(addr)
+		if err == nil {
+			successCount++
+		}
 	}
 
-	// Wait for some responses
+	d.config.Logger.Info("Bootstrap pings sent", "successful", successCount, "total", len(d.config.BootstrapNodes))
+
 	time.Sleep(2 * time.Second)
 
-	// Perform lookup for our own ID to populate routing table
-	d.FindNode(d.localID)
+	stats := d.table.GetStats()
+	d.config.Logger.Info("Routing table after bootstrap",
+		"total_contacts", stats.TotalContacts,
+		"good", stats.GoodContacts,
+		"filled_buckets", stats.FilledBuckets)
+
+	_, err := d.FindNode(d.localID)
+	if err != nil {
+		d.config.Logger.Warn("Self-lookup failed", "error", err)
+	} else {
+		d.config.Logger.Info("Self-lookup completed")
+	}
 }
 
-// refreshLoop refreshes stale buckets.
 func (d *DHT) refreshLoop() {
 	defer d.wg.Done()
 
@@ -264,20 +274,15 @@ func (d *DHT) refreshLoop() {
 	}
 }
 
-// refresh finds and refreshes stale buckets.
 func (d *DHT) refresh() {
 	buckets := d.table.GetBucketsNeedingRefresh()
 
 	for _, bucketIdx := range buckets {
-		// Generate random ID in bucket range
 		target := d.randomIDInBucket(bucketIdx)
-
-		// Perform lookup
 		d.FindNode(target)
 	}
 }
 
-// pingLoop pings questionable contacts.
 func (d *DHT) pingLoop() {
 	defer d.wg.Done()
 
@@ -294,7 +299,6 @@ func (d *DHT) pingLoop() {
 	}
 }
 
-// pingQuestionable pings questionable contacts to verify liveness.
 func (d *DHT) pingQuestionable() {
 	contacts := d.table.GetQuestionableContacts()
 
@@ -311,7 +315,6 @@ func (d *DHT) pingQuestionable() {
 			continue
 		}
 
-		// Verify node ID matches
 		nodeID, ok := response.GetNodeID()
 		if !ok || nodeID != contact.ID() {
 			d.table.Remove(contact.ID())
@@ -322,14 +325,10 @@ func (d *DHT) pingQuestionable() {
 	}
 }
 
-// randomIDInBucket generates a random node ID within a bucket's range.
 func (d *DHT) randomIDInBucket(bucketIdx int) [sha1.Size]byte {
-	// Simple implementation: XOR local ID with random bits
-	// positioned at the bucket index
 	var id [sha1.Size]byte
 	copy(id[:], d.localID[:])
 
-	// Flip bit at position (159 - bucketIdx)
 	bitPos := 159 - bucketIdx
 	byteIdx := bitPos / 8
 	bitIdx := byte(bitPos % 8)
@@ -339,19 +338,16 @@ func (d *DHT) randomIDInBucket(bucketIdx int) [sha1.Size]byte {
 	return id
 }
 
-// isStarted checks if DHT is running.
 func (d *DHT) isStarted() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.started
 }
 
-// Stats returns current DHT statistics.
 func (d *DHT) Stats() RoutingTableStats {
 	return d.table.GetStats()
 }
 
-// LocalAddr returns the local UDP address.
 func (d *DHT) LocalAddr() *net.UDPAddr {
 	return d.krpc.LocalAddr()
 }

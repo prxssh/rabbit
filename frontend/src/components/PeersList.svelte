@@ -13,7 +13,7 @@
     }
 
     // Sort peers by connection time (descending - longest connected first)
-    $: sortedPeers = [...peers].sort((a, b) => b.ConnectedFor - a.ConnectedFor)
+    $: sortedPeers = [...peers].sort((a, b) => (b.connectedForNs ?? b.ConnectedFor ?? 0) - (a.connectedForNs ?? a.ConnectedFor ?? 0))
 </script>
 
 {#if peers.length === 0}
@@ -24,6 +24,7 @@
             <thead>
                 <tr>
                     <th>Address</th>
+                    <th>Source</th>
                     <th>Status</th>
                     <th>Downloaded</th>
                     <th>Uploaded</th>
@@ -33,24 +34,35 @@
             </thead>
             <tbody>
                 {#each sortedPeers as peer}
-                    <tr on:click={() => handlePeerClick(peer.Addr)} style="cursor: pointer;">
-                        <td class="peer-addr">{peer.Addr}</td>
+                    <tr on:click={() => handlePeerClick(peer.addr || peer.Addr)} style="cursor: pointer;">
+                        <td class="peer-addr">{peer.addr || peer.Addr}</td>
+                        <td class="peer-source">
+                            {#if (peer.source || peer.Source) === 'tracker'}
+                                <Badge variant="primary" text="Tracker" />
+                            {:else if (peer.source || peer.Source) === 'dht'}
+                                <Badge variant="info" text="DHT" />
+                            {:else if (peer.source || peer.Source) === 'pex'}
+                                <Badge variant="success" text="PEX" />
+                            {:else}
+                                <Badge variant="default" text={(peer.source || peer.Source) || 'Unknown'} />
+                            {/if}
+                        </td>
                         <td class="peer-status">
                             <div class="status-badges">
-                                {#if peer.IsChoked}
+                                {#if peer.isChoked ?? peer.IsChoked}
                                     <Badge variant="error" text="Choked" />
                                 {:else}
                                     <Badge variant="success" text="Unchoked" />
                                 {/if}
-                                {#if peer.IsInterested}
+                                {#if peer.isInterested ?? peer.IsInterested}
                                     <Badge variant="success" text="Interested" />
                                 {/if}
                             </div>
                         </td>
-                        <td>{formatBytes(peer.Downloaded)}</td>
-                        <td>{formatBytes(peer.Uploaded)}</td>
-                        <td>{formatBytesPerSec(peer.DownloadRate)}</td>
-                        <td>{formatBytesPerSec(peer.UploadRate)}</td>
+                        <td>{formatBytes(peer.downloaded ?? peer.Downloaded)}</td>
+                        <td>{formatBytes(peer.uploaded ?? peer.Uploaded)}</td>
+                        <td>{formatBytesPerSec(peer.downloadRate ?? peer.DownloadRate)}</td>
+                        <td>{formatBytesPerSec(peer.uploadRate ?? peer.UploadRate)}</td>
                     </tr>
                 {/each}
             </tbody>

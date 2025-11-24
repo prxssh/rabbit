@@ -29,6 +29,7 @@ type Peer struct {
 	logger         *slog.Logger
 	conn           net.Conn
 	addr           netip.AddrPort
+	source         PeerSource
 	stats          *peerStats
 	messageHistory *messageHistoryBuffer
 	messageOutbox  chan *protocol.Message
@@ -57,19 +58,20 @@ type peerStats struct {
 }
 
 type PeerMetrics struct {
-	Addr           netip.AddrPort
-	Downloaded     uint64
-	Uploaded       uint64
-	RequestsSent   uint64
-	BlocksReceived uint64
-	BlocksFailed   uint64
-	LastActive     time.Time
-	ConnectedAt    time.Time
-	ConnectedForNs int64
-	DownloadRate   uint64
-	UploadRate     uint64
-	IsChoked       bool
-	IsInterested   bool
+	Addr           netip.AddrPort `json:"addr"`
+	Source         string         `json:"source"`
+	Downloaded     uint64         `json:"downloaded"`
+	Uploaded       uint64         `json:"uploaded"`
+	RequestsSent   uint64         `json:"requestsSent"`
+	BlocksReceived uint64         `json:"blocksReceived"`
+	BlocksFailed   uint64         `json:"blocksFailed"`
+	LastActive     time.Time      `json:"lastActive"`
+	ConnectedAt    time.Time      `json:"connectedAt"`
+	ConnectedForNs int64          `json:"connectedForNs"`
+	DownloadRate   uint64         `json:"downloadRate"`
+	UploadRate     uint64         `json:"uploadRate"`
+	IsChoked       bool           `json:"isChoked"`
+	IsInterested   bool           `json:"isInterested"`
 }
 
 type peerOpts struct {
@@ -80,6 +82,7 @@ type peerOpts struct {
 	workQueue  <-chan scheduler.Event
 	eventQueue chan<- scheduler.Event
 	config     *Config
+	source     PeerSource
 }
 
 func newPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, error) {
@@ -101,6 +104,7 @@ func newPeer(ctx context.Context, addr netip.AddrPort, opts *peerOpts) (*Peer, e
 		logger:         logger,
 		conn:           conn,
 		addr:           addr,
+		source:         opts.source,
 		stats:          &peerStats{},
 		work:           opts.workQueue,
 		event:          opts.eventQueue,
@@ -161,6 +165,7 @@ func (p *Peer) Stats() PeerMetrics {
 
 	return PeerMetrics{
 		Addr:           p.addr,
+		Source:         p.source.String(),
 		Downloaded:     p.stats.Downloaded.Load(),
 		Uploaded:       p.stats.Uploaded.Load(),
 		RequestsSent:   p.stats.RequestsSent.Load(),
@@ -168,6 +173,7 @@ func (p *Peer) Stats() PeerMetrics {
 		BlocksFailed:   p.stats.RequestsTimeout.Load(),
 		LastActive:     lastActive,
 		ConnectedAt:    connectedAt,
+		ConnectedForNs: time.Since(connectedAt).Nanoseconds(),
 		DownloadRate:   p.stats.DownloadRate.Load(),
 		UploadRate:     p.stats.UploadRate.Load(),
 		IsChoked:       p.PeerChoking(),

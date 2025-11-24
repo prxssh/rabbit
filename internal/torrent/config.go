@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"github.com/prxssh/rabbit/internal/dht"
 	"github.com/prxssh/rabbit/internal/peer"
 	"github.com/prxssh/rabbit/internal/scheduler"
 	"github.com/prxssh/rabbit/internal/storage"
@@ -12,6 +13,7 @@ type Config struct {
 	Storage   *storage.Config
 	Peer      *peer.Config
 	Tracker   *tracker.Config
+	DHT       *dht.Config
 }
 
 func WithDefaultConfig() *Config {
@@ -20,5 +22,6 @@ func WithDefaultConfig() *Config {
 		Storage:   storage.WithDefaultConfig(),
 		Peer:      peer.WithDefaultConfig(),
 		Tracker:   tracker.WithDefaultConfig(),
+		DHT:       dht.WithDefaultConfig(),
 	}
 }

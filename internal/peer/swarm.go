@@ -15,6 +15,38 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// PeerSource represents where a peer was discovered from
+type PeerSource int
+
+const (
+	PeerSourceUnknown PeerSource = iota
+	PeerSourceTracker
+	PeerSourceDHT
+	PeerSourcePEX // Peer Exchange (for future)
+	PeerSourceManual
+)
+
+func (ps PeerSource) String() string {
+	switch ps {
+	case PeerSourceTracker:
+		return "tracker"
+	case PeerSourceDHT:
+		return "dht"
+	case PeerSourcePEX:
+		return "pex"
+	case PeerSourceManual:
+		return "manual"
+	default:
+		return "unknown"
+	}
+}
+
+// PeerAddr wraps a peer address with its source
+type PeerAddr struct {
+	Addr   netip.AddrPort
+	Source PeerSource
+}
+
 type Config struct {
 	MaxPeers                  uint8
 	UploadSlots               uint8
@@ -55,7 +87,7 @@ type Swarm struct {
 	cancel                     context.CancelFunc
 	scheduler                  *scheduler.Scheduler
 	optimisticUnchokedPeerAddr netip.AddrPort
-	peerConnectCh              chan netip.AddrPort
+	peerConnectCh              chan PeerAddr
 }
 
 type SwarmStats struct {
@@ -103,7 +135,7 @@ func NewSwarm(opts *SwarmOpts) (*Swarm, error) {
 		stats:         &SwarmStats{},
 		scheduler:     opts.Scheduler,
 		peers:         make(map[netip.AddrPort]*Peer),
-		peerConnectCh: make(chan netip.AddrPort, opts.Config.MaxPeers),
+		peerConnectCh: make(chan PeerAddr, opts.Config.MaxPeers),
 		logger:        opts.Logger.With("source", "peer_swarm"),
 		isSeeder:      opts.IsSeeder,
 	}, nil
@@ -123,8 +155,19 @@ func (s *Swarm) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
-func (s *Swarm) GetPeerConnectQueue() chan<- netip.AddrPort {
+func (s *Swarm) GetPeerConnectQueue() chan<- PeerAddr {
 	return s.peerConnectCh
+}
+
+// AdmitPeersWithSource admits peers with explicit source tracking
+func (s *Swarm) AdmitPeersWithSource(addrs []PeerAddr) {
+	for _, peerAddr := range addrs {
+		select {
+		case s.peerConnectCh <- peerAddr:
+		default:
+			s.logger.Warn("admit peer queue full; dropping", "addr", peerAddr.Addr, "source", peerAddr.Source.String())
+		}
+	}
 }
 
 func (s *Swarm) Stats() SwarmMetrics {
@@ -156,17 +199,16 @@ func (s *Swarm) PeerMetrics() []PeerMetrics {
 	return metrics
 }
 
+// AdmitPeers admits peers with unknown source (for backwards compatibility)
 func (s *Swarm) AdmitPeers(addrs []netip.AddrPort) {
-	for _, addr := range addrs {
-		select {
-		case s.peerConnectCh <- addr:
-		default:
-			s.logger.Warn("admit peer queue full; dropping", "addr", addr)
-		}
+	peerAddrs := make([]PeerAddr, len(addrs))
+	for i, addr := range addrs {
+		peerAddrs[i] = PeerAddr{Addr: addr, Source: PeerSourceUnknown}
 	}
+	s.AdmitPeersWithSource(peerAddrs)
 }
 
-func (s *Swarm) addPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error) {
+func (s *Swarm) addPeer(ctx context.Context, addr netip.AddrPort, source PeerSource) (*Peer, error) {
 	s.peerMut.RLock()
 	_, dup := s.peers[addr]
 	totalPeers := len(s.peers)
@@ -189,6 +231,7 @@ func (s *Swarm) addPeer(ctx context.Context, addr netip.AddrPort) (*Peer, error)
 		logger:     s.logger,
 		eventQueue: s.scheduler.GetPeerEventQueue(),
 		workQueue:  s.scheduler.GetPeerWorkQueue(addr),
+		source:     source,
 	})
 	s.stats.ConnectingPeers.Add(^uint32(0))
 
@@ -276,11 +319,12 @@ func (s *Swarm) peerDialerLoop(ctx context.Context) error {
 				return nil
 			}
 
-			peer, err := s.addPeer(ctx, peerAddr)
+			peer, err := s.addPeer(ctx, peerAddr.Addr, peerAddr.Source)
 			if err != nil {
 				l.Debug(
 					"peer connection failed",
-					"addr", peerAddr,
+					"addr", peerAddr.Addr,
+					"source", peerAddr.Source.String(),
 					"error", err.Error(),
 				)
 				continue

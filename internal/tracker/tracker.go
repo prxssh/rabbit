@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prxssh/rabbit/internal/peer"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -144,13 +145,13 @@ type Tracker struct {
 	trackers   map[string]TrackerProtocol
 
 	stats         *Stats
-	peerAddrQueue chan<- netip.AddrPort
+	peerAddrQueue chan<- peer.PeerAddr
 	getState      func() *AnnounceParams
 }
 
 type TrackerOpts struct {
 	GetState      func() *AnnounceParams
-	PeerAddrQueue chan<- netip.AddrPort
+	PeerAddrQueue chan<- peer.PeerAddr
 	Logger        *slog.Logger
 	Config        *Config
 }
@@ -262,9 +263,9 @@ func (t *Tracker) Announce(ctx context.Context, params *AnnounceParams) (*Announ
 			t.stats.CurrentLeechers.Store(resp.Leechers)
 
 			if t.peerAddrQueue != nil && params.Event != EventStopped {
-				for _, peer := range resp.Peers {
+				for _, peerAddr := range resp.Peers {
 					select {
-					case t.peerAddrQueue <- peer:
+					case t.peerAddrQueue <- peer.PeerAddr{Addr: peerAddr, Source: peer.PeerSourceTracker}:
 					default:
 						t.logger.Debug(
 							"peer addr queue full; droppping peer",
